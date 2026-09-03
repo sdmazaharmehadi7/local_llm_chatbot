@@ -1,0 +1,162 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Use class-based dark mode so .dark on <html> activates dark: utilities */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /*
+   * Theme-aware color system
+   * These pull from CSS variables set by useThemeStore at runtime.
+   * Fallback values are Default theme (dark mode) for initial load.
+   */
+
+  /* Semantic theme colors - used by components */
+  --color-theme-background: var(--theme-background, #09090b);
+  --color-theme-foreground: var(--theme-foreground, #fafafa);
+  --color-theme-primary: var(--theme-primary, #6366f1);
+  --color-theme-secondary: var(--theme-secondary, #18181b);
+  --color-theme-accent: var(--theme-accent, #818cf8);
+  --color-theme-muted: var(--theme-muted, #52525b);
+  --color-theme-border: var(--theme-border, #27272a);
+
+  /* Surface colors for layered UI elements */
+  --color-theme-canvas: var(--theme-canvas, #09090b);
+  --color-theme-canvas-alt: var(--theme-canvas-alt, #18181b);
+  --color-theme-canvas-strong: var(--theme-canvas-strong, #09090b);
+  --color-theme-surface: var(--theme-surface, #18181b);
+  --color-theme-surface-strong: var(--theme-surface-strong, #27272a);
+  --color-theme-surface-stronger: var(--theme-surface-stronger, #3f3f46);
+
+  /* Overlay colors for popups, modals, etc */
+  --color-theme-overlay: var(--theme-overlay, #52525b);
+  --color-theme-overlay-strong: var(--theme-overlay-strong, #71717a);
+
+  /* Text colors */
+  --color-theme-text: var(--theme-text, #fafafa);
+  --color-theme-text-muted: var(--theme-text-muted, #a1a1aa);
+  --color-theme-text-subtle: var(--theme-text-subtle, #d4d4d8);
+
+  /* Status/accent colors */
+  --color-theme-red: var(--theme-red, #f87171);
+  --color-theme-green: var(--theme-green, #4ade80);
+  --color-theme-yellow: var(--theme-yellow, #facc15);
+  --color-theme-blue: var(--theme-blue, #60a5fa);
+  --color-theme-pink: var(--theme-pink, #f472b6);
+  --color-theme-teal: var(--theme-teal, #2dd4bf);
+  --color-theme-mauve: var(--theme-mauve, #a78bfa);
+  --color-theme-peach: var(--theme-peach, #fb923c);
+  --color-theme-sky: var(--theme-sky, #38bdf8);
+  --color-theme-lavender: var(--theme-lavender, #a5b4fc);
+}
+
+@layer base {
+  /* Base design tokens - these are overridden by useThemeStore at runtime */
+  :root {
+    color-scheme: dark;
+    --border-radius-normal: 12px;
+    --shadow-color: 9 9 11;
+    --inverted-text: #fafafa;
+    /* Font defaults - overridden by useThemeStore */
+    --theme-font-chat: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --theme-font-size-chat: 16px;
+  }
+
+  /* Shiki syntax highlighting - dual theme support via CSS variables */
+  /* Light mode: use --shiki-light variables */
+  .shiki-wrapper .shiki span {
+    color: var(--shiki-light) !important;
+    background-color: transparent !important;
+  }
+  /* Dark mode: switch to --shiki-dark variables */
+  .dark .shiki-wrapper .shiki span {
+    color: var(--shiki-dark) !important;
+  }
+  /* Code block container styling */
+  .shiki-wrapper .shiki {
+    background-color: var(--theme-surface, #18181b) !important;
+    border-radius: var(--border-radius-normal);
+    border: 1px solid var(--theme-border, #27272a);
+  }
+
+  /* Code block line numbers - CSS counters keep copied/selected text clean */
+  .line-numbers code {
+    counter-reset: line;
+  }
+  .line-numbers .line {
+    counter-increment: line;
+  }
+  .line-numbers .line::before {
+    content: counter(line);
+    display: inline-block;
+    width: 3ch;
+    margin-right: 1.25em;
+    text-align: right;
+    color: var(--theme-text-muted, #8b8b8b);
+    user-select: none;
+  }
+
+  /* Set default background and text colors */
+  body {
+    background-color: var(--theme-background, #09090b);
+    color: var(--theme-foreground, #fafafa);
+    font-family:
+      "Inter",
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      sans-serif;
+    transition:
+      background-color 0.3s ease,
+      color 0.3s ease;
+  }
+
+  /* Scrollbar Styling - now theme-aware */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--theme-surface-strong, #bcc0cc);
+    border-radius: 99px;
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background: var(--theme-surface-strong, #494d64);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--theme-overlay, #9ca0b0);
+  }
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: var(--theme-overlay, #6e738d);
+  }
+}
+
+/* Custom Button Classes from Mockup Design System */
+.btn {
+  padding: 0.6rem 1.2rem;
+  border-radius: var(--border-radius-normal);
+  border: none;
+  font-weight: 600;
+  color: var(--inverted-text);
+  transition: all 0.35s ease-in-out;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Primary Button */
+.btn-primary {
+  background-color: var(--theme-primary, #6366f1);
+  color: white;
+}
+.btn-primary:hover {
+  background-color: var(--theme-accent, #818cf8);
+  box-shadow: 0 4px 15px -3px rgba(var(--shadow-color), 0.5);
+}

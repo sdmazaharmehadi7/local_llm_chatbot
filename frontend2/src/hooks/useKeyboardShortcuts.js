@@ -1,0 +1,71 @@
+import { useEffect } from "react";
+import { useUiState } from "@/state/useUiState";
+import { useChatNavigation } from "./useChatNavigation";
+import { useCreateChatMutation } from "./useChatsQuery";
+import { useIsMobile } from "./useIsMobile";
+import { getShortcut } from "@/shared";
+
+/**
+ * Global keyboard shortcuts hook.
+ * Shortcut definitions live in @/shared/constants/shortcuts.js
+ */
+export function useKeyboardShortcuts() {
+  const { navigateToChat } = useChatNavigation();
+  const createChatMutation = useCreateChatMutation();
+  const isMobile = useIsMobile();
+
+  const toggleSidebar = useUiState((state) => state.toggleSidebar);
+  const toggleSidebarCollapse = useUiState((state) => state.toggleSidebarCollapse);
+  const setSidebarOpen = useUiState((state) => state.setSidebarOpen);
+  const sidebarCollapsed = useUiState((state) => state.sidebarCollapsed);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Toggle sidebar - Ctrl+B
+      if (getShortcut("toggleSidebar").check(e)) {
+        e.preventDefault();
+        if (isMobile) {
+          toggleSidebar();
+        } else {
+          toggleSidebarCollapse();
+        }
+        return;
+      }
+
+      // New chat - Ctrl+Shift+O
+      if (getShortcut("newChat").check(e)) {
+        e.preventDefault();
+        createChatMutation.mutateAsync({}).then((newChat) => {
+          navigateToChat(newChat.id);
+          if (!isMobile && sidebarCollapsed) {
+            toggleSidebarCollapse();
+          }
+        });
+        return;
+      }
+
+      // Focus search - Ctrl+K
+      if (getShortcut("focusSearch").check(e)) {
+        e.preventDefault();
+        if (isMobile) {
+          setSidebarOpen(true);
+        } else if (sidebarCollapsed) {
+          toggleSidebarCollapse();
+        }
+        window.dispatchEvent(new CustomEvent("focus-sidebar-search"));
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    isMobile,
+    sidebarCollapsed,
+    toggleSidebar,
+    toggleSidebarCollapse,
+    setSidebarOpen,
+    navigateToChat,
+    createChatMutation,
+  ]);
+}

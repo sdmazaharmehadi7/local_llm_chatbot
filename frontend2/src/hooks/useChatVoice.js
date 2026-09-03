@@ -1,0 +1,51 @@
+import { useVoice } from "@/hooks/useVoice";
+import { showErrorToast } from "@/lib/errorHandler";
+import { extractTextContent, hasTextContent } from "@/lib/messageUtils";
+import { useEffect, useRef } from "react";
+
+const shouldSpeakMessage = (message, lastSpokenId) => {
+  if (!message) {
+    return false;
+  }
+  const isAssistantMessage = message.role === "assistant";
+  const notAlreadySpoken = lastSpokenId !== message.id;
+  return isAssistantMessage && hasTextContent(message) && notAlreadySpoken;
+};
+
+export function useChatVoice({ messages, isLoading, setInput, submitMessage }) {
+  const lastSpokenMessageRef = useRef(null);
+
+  const voice = useVoice({
+    onSpeechResult: async (transcript) => {
+      setInput(transcript);
+      await submitMessage({ content: transcript });
+    },
+    onError: (error) => {
+      console.error("Voice error:", error);
+      showErrorToast(error);
+    },
+  });
+
+  useEffect(() => {
+    if (!voice.isActive || messages.length === 0 || isLoading) {
+      return;
+    }
+
+    const lastMessage = messages[messages.length - 1];
+    if (!shouldSpeakMessage(lastMessage, lastSpokenMessageRef.current)) {
+      return;
+    }
+
+    const content = extractTextContent(lastMessage);
+    lastSpokenMessageRef.current = lastMessage.id;
+
+    // Check processing state but don't depend on it - we care about new messages, not state changes
+    if (voice.isProcessing) {
+      voice.completeProcessing();
+    }
+
+    voice.speakStream(content);
+  }, [messages, voice.isActive, isLoading]);
+
+  return { voice };
+}

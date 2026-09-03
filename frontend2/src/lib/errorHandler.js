@@ -1,0 +1,174 @@
+import { toast } from "sonner";
+
+/**
+ * Extract error message from various error formats
+ */
+export function extractErrorMessage(error) {
+  if (!error) {
+    return "An unexpected error occurred.";
+  }
+  if (typeof error === "string") {
+    return extractFromString(error);
+  }
+  if (error instanceof Error) {
+    return extractFromString(error.message);
+  }
+  if (typeof error === "object") {
+    return extractFromObject(error) ?? safeString(error);
+  }
+
+  return safeString(error);
+}
+
+// A serialized structured error can arrive as a raw JSON string (e.g. the AI SDK
+// transport throws `new Error(await response.text())`). Parsing may only improve
+// the message, never degrade it: only plain objects that yield a usable message
+// get reformatted; arrays, non-objects, and objects with no extractable message
+// pass through as the original string unchanged.
+function extractFromString(str) {
+  let parsed;
+  try {
+    parsed = JSON.parse(str);
+  } catch {
+    return str;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return str;
+  }
+  return extractFromObject(parsed) ?? str;
+}
+
+// Returns a usable message string, or null when nothing extractable is present.
+function extractFromObject(error) {
+  // Check for structured attachment error with code and details
+  if (error.code && error.details) {
+    const detailsText = formatErrorDetails(error.details);
+    return detailsText || error.error || error.message || "Attachment error";
+  }
+
+  if (typeof error.message === "string") {
+    return error.message;
+  }
+  if (typeof error.error === "string") {
+    return error.error;
+  }
+  if (error.error && typeof error.error.message === "string") {
+    return error.error.message;
+  }
+
+  return null;
+}
+
+function safeString(value) {
+  try {
+    return String(value);
+  } catch {
+    return "An unexpected error occurred.";
+  }
+}
+
+/**
+ * Format error details for UI display
+ */
+function formatErrorDetails(details) {
+  if (!details || details.length === 0) return "";
+
+  const lines = details.map((d) => {
+    const filename = d.filename ? `"${d.filename}"` : "Attachment";
+    return `- ${filename}: ${d.reason} ${d.suggestion ? "(" + d.suggestion + ")" : ""}`;
+  });
+
+  if (details.length === 1) {
+    return lines[0];
+  }
+
+  return "Attachment issue:\n" + lines.join("\n");
+}
+
+/**
+ * Categorize error type for better UX
+ */
+function categorizeError(message) {
+  if (!message) {
+    return "error";
+  }
+
+  const msg = message.toLowerCase();
+  if (msg.includes("network") || msg.includes("offline") || msg.includes("connection")) {
+    return "network";
+  }
+  if (msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("auth")) {
+    return "auth";
+  }
+  if (msg.includes("validation") || msg.includes("invalid")) {
+    return "validation";
+  }
+  if (msg.includes("not found") || msg.includes("404")) {
+    return "notfound";
+  }
+  if (msg.includes("timeout")) {
+    return "timeout";
+  }
+  return "error";
+}
+
+/**
+ * Show enhanced error toast with smart categorization and copy action
+ * @param {string|Error|object} error - The error to display
+ * @param {number} duration - Toast duration in ms (default: 4000)
+ */
+export function showErrorToast(error, duration = 4000) {
+  const message = extractErrorMessage(error);
+  const category = categorizeError(message);
+
+  const copyAction = {
+    label: "Copy",
+    onClick: () => navigator.clipboard.writeText(message),
+  };
+
+  switch (category) {
+    case "network":
+      toast.error("Connection Error", {
+        description: "Check your internet connection or verify the server is running.",
+        duration,
+        action: copyAction,
+      });
+      break;
+
+    case "timeout":
+      toast.error("Request Timeout", {
+        description: "The request took too long. Try again.",
+        duration,
+        action: copyAction,
+      });
+      break;
+
+    case "auth":
+      toast.error("Authentication Error", {
+        description: "Your session may have expired. Please log in again.",
+        duration,
+      });
+      break;
+
+    case "validation":
+      toast.warning("Invalid Input", {
+        description: message,
+        duration,
+      });
+      break;
+
+    case "notfound":
+      toast.error("Not Found", {
+        description: message,
+        duration,
+      });
+      break;
+
+    default:
+      toast.error("Error", {
+        description: message,
+        duration,
+        action: copyAction,
+      });
+  }
+}
