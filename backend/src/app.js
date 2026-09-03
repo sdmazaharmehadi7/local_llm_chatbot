@@ -14,6 +14,7 @@ import cors from "cors";
 import "dotenv/config";
 
 import chatRoutes from "./routes/chat.routes.js";
+import chatsRoutes from "./routes/chats.routes.js";
 import { checkOllamaHealth } from "./services/ollama.service.js";
 
 const app = express();
@@ -47,8 +48,40 @@ app.get("/api/health", async (_req, res) => {
   });
 });
 
-// Chat endpoints
+/**
+ * GET /api/models
+ * Returns available models for the frontend model selector
+ */
+app.get("/api/models", (_req, res) => {
+  const modelName = process.env.OLLAMA_MODEL || "qwen3:8b";
+  return res.json({
+    models: [
+      {
+        id: "ollama-qwen3",
+        model_id: modelName,
+        name: "Qwen 3 8B",
+        display_name: "Qwen 3 (8B Local)",
+        provider: "ollama",
+        provider_id: "ollama",
+        type: "text",
+        enabled: true,
+        is_default: true,
+        context_window: 40960,
+        metadata: {
+          supports_tools: true,
+          description: "Local Qwen 3 8B model via Ollama with reasoning support",
+        },
+      },
+    ],
+  });
+});
+
+// Legacy single-turn chat (kept for backend testing with curl)
 app.use("/api/chat", chatRoutes);
+
+// AI SDK v6 streaming completion — consumed by useChatStream.js / @ai-sdk/react
+// POST /api/chats/:id/completion
+app.use("/api/chats", chatsRoutes);
 
 // ─── 404 Fallback ─────────────────────────────────────────────────────────────
 
