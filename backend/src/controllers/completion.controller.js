@@ -70,11 +70,12 @@ export async function postCompletion(req, res) {
   }
 
   // ── 2. Check Ollama reachability ───────────────────────────────────────────
+  // STRICT RULE: Backend never starts Ollama. If unreachable, return controlled error.
   const reachable = await isOllamaReachable();
   if (!reachable) {
     return res.status(503).json({
       success: false,
-      error: "Local AI service is unavailable. Please start Ollama and try again.",
+      error: "Ollama is not running. Please start Ollama manually.",
     });
   }
 
@@ -105,11 +106,13 @@ export async function postCompletion(req, res) {
   } catch (err) {
     console.error(`[completion.controller] Failed to ensure model ${targetModel}:`, err.message);
     const isConnErr =
-      err.message.includes("reach Ollama") || err.message.includes("fetch failed");
+      err.message.includes("reach Ollama") ||
+      err.message.includes("fetch failed") ||
+      err.message.includes("not running");
     return res.status(isConnErr ? 503 : 400).json({
       success: false,
       error: isConnErr
-        ? "Local AI service is unavailable. Please start Ollama and try again."
+        ? "Ollama is not running. Please start Ollama manually."
         : "Selected model is not available locally.",
     });
   }

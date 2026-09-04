@@ -27,6 +27,7 @@ import { isValidModelId } from "../constants/models.config.js";
 export async function getModels(req, res) {
   try {
     const allModels = getAvailableModels();
+    const { type } = req.query;
     // Filter by type if specifically requested (both "text" and "chat" match local chat models)
     let models = allModels;
     if (type && type !== "text" && type !== "chat") {

@@ -159,7 +159,7 @@ const PullModelModal = ({ isOpen, onClose, provider, onSuccess }) => {
             type="text"
             value={modelName}
             onChange={(e) => setModelName(e.target.value)}
-            placeholder="e.g., llama3.2, codellama:7b, mistral"
+            placeholder="e.g., qwen3:8b, qwen2.5-coder:7b, qwen2.5vl:7b"
             disabled={isPulling}
             autoFocus
             className="border-theme-surface bg-theme-canvas text-theme-text placeholder:text-theme-text-muted focus:border-theme-blue focus:ring-theme-blue w-full rounded-lg border px-3 py-2 text-sm transition-colors focus:ring-2 focus:outline-none disabled:opacity-50"

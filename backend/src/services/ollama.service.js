@@ -1,11 +1,14 @@
 /**
  * Ollama Service
  *
- * Handles all communication with the local Ollama API.
- * Manages model lifecycle and enforces:
- * "Only ONE chat model should be loaded in Ollama RAM at a time."
+ * Handles HTTP communication with the local Ollama API (http://localhost:11434).
  *
- * Architecture: React → Express → OllamaService → Ollama → [Selected Model]
+ * STRICT RULE: Ollama is an EXTERNALLY MANAGED service.
+ * - Backend NEVER executes `ollama serve`, `ollama run`, or any spawn/exec/child_process.
+ * - If Ollama is not running, controlled errors are returned without attempting startup.
+ * - Manages model lifecycle in RAM: only ONE chat model in RAM at a time.
+ *
+ * Architecture: React → Express → OllamaService → http://localhost:11434
  */
 
 import {
@@ -326,9 +329,7 @@ export async function sendChatToOllama(messages, requestedModel = null) {
     if (err.name === "TimeoutError") {
       throw new Error("Ollama request timed out. The model may be slow or not running.");
     }
-    throw new Error(
-      `Could not reach Ollama at ${OLLAMA_BASE_URL}. Make sure Ollama is running.`
-    );
+    throw new Error("Ollama is not running. Please start Ollama manually.");
   }
 
   if (!response.ok) {
@@ -383,9 +384,7 @@ export async function streamChatFromOllama(messages, signal = null, requestedMod
     if (err.name === "AbortError") {
       throw err;
     }
-    throw new Error(
-      `Could not reach Ollama at ${OLLAMA_BASE_URL}. Make sure Ollama is running.`
-    );
+    throw new Error("Ollama is not running. Please start Ollama manually.");
   }
 
   if (!response.ok) {

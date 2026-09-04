@@ -56,6 +56,7 @@ export async function postChat(req, res) {
 
     // Distinguish between connectivity errors and model errors
     const isConnectionError =
+      err.message.includes("not running") ||
       err.message.includes("Could not reach Ollama") ||
       err.message.includes("timed out");
 
