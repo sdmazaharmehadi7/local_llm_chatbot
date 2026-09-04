@@ -49,51 +49,16 @@ const ChatInterface = ({ chatId }) => {
   );
   const modelSupportsTools = !!currentModelData?.metadata?.supports_tools;
 
-  const [isSwitching, setIsSwitching] = useState(false);
-  const [switchingModelId, setSwitchingModelId] = useState(null);
-
-  // Sync active model with backend on initial load if available
-  useEffect(() => {
-    let active = true;
-    providersClient
-      .getModelStatus()
-      .then((status) => {
-        if (active && status?.activeModel) {
-          setPreferredModel(status.activeModel);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const handleModelChange = async (modelId) => {
-    if (isSwitching || modelId === preferredModel) return;
-
+  const handleModelChange = (modelId) => {
+    if (modelId === preferredModel) return;
     clearError();
-    setIsSwitching(true);
-    setSwitchingModelId(modelId);
+    setPreferredModel(modelId);
 
-    try {
-      // Notify backend to unload previous model and load target model in RAM
-      await providersClient.selectModel(modelId);
-      setPreferredModel(modelId);
-
-      const newModel = (allModels || []).find(
-        (m) => m.model_id === modelId || m.id === modelId
-      );
-      if (!newModel?.metadata?.supports_tools) {
-        setWebSearchEnabled(false);
-      }
-
-      toast.success(`${newModel?.display_name || modelId} is ready`);
-    } catch (err) {
-      console.error("Failed to switch model:", err);
-      toast.error(err.message || "Unable to switch model");
-    } finally {
-      setIsSwitching(false);
-      setSwitchingModelId(null);
+    const newModel = (allModels || []).find(
+      (m) => m.model_id === modelId || m.id === modelId
+    );
+    if (!newModel?.metadata?.supports_tools) {
+      setWebSearchEnabled(false);
     }
   };
 
@@ -209,8 +174,6 @@ const ChatInterface = ({ chatId }) => {
             <ModelSelector
               currentModel={preferredModel}
               onModelChange={handleModelChange}
-              isSwitching={isSwitching}
-              switchingModelId={switchingModelId}
             />
           )}
 
@@ -236,6 +199,7 @@ const ChatInterface = ({ chatId }) => {
               status={status}
               onStop={stop}
               onRegenerate={regenerate}
+              activeModelName={currentModelData?.display_name}
             />
           </div>
         </div>
@@ -255,7 +219,7 @@ const ChatInterface = ({ chatId }) => {
               handleInputChange={handleInputChange}
               handleSubmit={handleSubmit}
               voiceControls={voice}
-              disabled={isLoading || isGenerating || isSwitching}
+              disabled={isLoading || isGenerating}
               onImageSubmit={handleImageSubmit}
               webSearchEnabled={webSearchEnabled}
               onToggleWebSearch={toggleWebSearch}
@@ -266,7 +230,6 @@ const ChatInterface = ({ chatId }) => {
               onRemoveFile={removeFile}
               isLoading={isLoading}
               isGenerating={isGenerating}
-              isSwitching={isSwitching}
             />
           </div>
         </div>

@@ -13,6 +13,7 @@ import {
   getAvailableModels,
   getLoadedModels,
   getActiveModel,
+  setActiveModel,
   isSwitching,
   switchModel,
 } from "../services/ollama.service.js";
@@ -91,23 +92,16 @@ export async function selectModel(req, res) {
   if (!isValidModelId(model)) {
     return res.status(400).json({
       success: false,
-      error: `Selected model "${model}" is not available locally. Allowed models: ${getAvailableModels().map((m) => m.id).join(", ")}`,
+      error: "Selected model is not available locally.",
     });
   }
 
-  try {
-    const result = await switchModel(model);
-    return res.json({
-      success: true,
-      activeModel: result.activeModel,
-      message: result.message,
-    });
-  } catch (err) {
-    console.error(`[models.controller] Model switch error for ${model}:`, err.message);
-    const isConnErr = err.message.includes("Could not reach Ollama");
-    return res.status(isConnErr ? 503 : 500).json({
-      success: false,
-      error: isConnErr ? "Local AI service unavailable" : err.message,
-    });
-  }
+  // Model selection is instant and lazy — does NOT trigger RAM load/switch
+  setActiveModel(model);
+
+  return res.json({
+    success: true,
+    activeModel: model,
+    message: `${model} selected`,
+  });
 }

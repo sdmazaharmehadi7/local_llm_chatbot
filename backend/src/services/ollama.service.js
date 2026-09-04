@@ -46,6 +46,48 @@ export function getActiveModel() {
 }
 
 /**
+ * Sets the active model preference without triggering RAM loading.
+ * @param {string} modelId
+ */
+export function setActiveModel(modelId) {
+  if (isValidModelId(modelId)) {
+    currentActiveModel = modelId;
+  }
+}
+
+/**
+ * Check whether Ollama service is reachable.
+ * @returns {Promise<boolean>}
+ */
+export async function isOllamaReachable() {
+  try {
+    const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`, {
+      signal: AbortSignal.timeout(3_000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fetch list of installed model names from Ollama (/api/tags).
+ * @returns {Promise<Array<string>>}
+ */
+export async function getInstalledModels() {
+  try {
+    const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`, {
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data?.models || []).map((m) => m.name || m.model).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Returns whether a model switch is currently in progress.
  * @returns {boolean}
  */

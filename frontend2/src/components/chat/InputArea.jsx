@@ -164,11 +164,9 @@ const InputArea = ({
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder={
-            isSwitching
-              ? "Switching model in RAM, please wait..."
-              : imageMode
-                ? "Describe the image you want to generate..."
-                : "Ask anything..."
+            imageMode
+              ? "Describe the image you want to generate..."
+              : "Ask anything..."
           }
           aria-label="Message input"
           disabled={disabled}

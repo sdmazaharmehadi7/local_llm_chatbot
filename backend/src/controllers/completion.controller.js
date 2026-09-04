@@ -32,6 +32,8 @@ import {
   getActiveModel,
   isSwitching,
   switchModel,
+  isOllamaReachable,
+  getInstalledModels,
 } from "../services/ollama.service.js";
 import { isValidModelId } from "../constants/models.config.js";
 
@@ -67,25 +69,48 @@ export async function postCompletion(req, res) {
     });
   }
 
-  // ── 2. Validate requested model ─────────────────────────────────────────────
-  let targetModel = requestedModel || getActiveModel();
-  if (requestedModel && !isValidModelId(requestedModel)) {
-    return res.status(400).json({
+  // ── 2. Check Ollama reachability ───────────────────────────────────────────
+  const reachable = await isOllamaReachable();
+  if (!reachable) {
+    return res.status(503).json({
       success: false,
-      error: `Selected model "${requestedModel}" is not available locally.`,
+      error: "Local AI service is unavailable. Please start Ollama and try again.",
     });
   }
 
-  // ── 3. Ensure target model is loaded in RAM (one-model-at-a-time) ───────────
+  // ── 3. Validate requested model ─────────────────────────────────────────────
+  let targetModel = requestedModel || getActiveModel();
+  if (!isValidModelId(targetModel)) {
+    return res.status(400).json({
+      success: false,
+      error: "Selected model is not available locally.",
+    });
+  }
+
+  // ── 4. Check if model exists locally in Ollama ──────────────────────────────
+  const installedModels = await getInstalledModels();
+  const isInstalled = installedModels.some(
+    (name) => name === targetModel || name.startsWith(targetModel.split(":")[0])
+  );
+  if (installedModels.length > 0 && !isInstalled) {
+    return res.status(400).json({
+      success: false,
+      error: "Selected model is not available locally.",
+    });
+  }
+
+  // ── 5. Lazy Load: Ensure ONLY target model is loaded in RAM ─────────────────
   try {
-    if (isSwitching() || targetModel !== getActiveModel()) {
-      await switchModel(targetModel);
-    }
+    await switchModel(targetModel);
   } catch (err) {
     console.error(`[completion.controller] Failed to ensure model ${targetModel}:`, err.message);
-    return res.status(500).json({
+    const isConnErr =
+      err.message.includes("reach Ollama") || err.message.includes("fetch failed");
+    return res.status(isConnErr ? 503 : 400).json({
       success: false,
-      error: `Unable to prepare model "${targetModel}": ${err.message}`,
+      error: isConnErr
+        ? "Local AI service is unavailable. Please start Ollama and try again."
+        : "Selected model is not available locally.",
     });
   }
 

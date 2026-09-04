@@ -65,7 +65,15 @@ const EmptyState = () => (
   </div>
 );
 
-const MessageList = ({ messages, isLoading, isGeneratingImage, status, onStop, onRegenerate }) => {
+const MessageList = ({
+  messages,
+  isLoading,
+  isGeneratingImage,
+  status,
+  onStop,
+  onRegenerate,
+  activeModelName,
+}) => {
   const sortedMessages = sortMessagesWithUserFirst(messages);
   const lastAssistantId = sortedMessages.findLast((msg) => msg.role === "assistant")?.id;
   const isEmpty = messages.length === 0 && !isLoading && !isGeneratingImage;
@@ -90,10 +98,13 @@ const MessageList = ({ messages, isLoading, isGeneratingImage, status, onStop, o
         );
       })}
       {isLoading && (
-        <span className="relative flex h-3 w-3">
-          <span className="bg-theme-peach absolute inline-flex h-full w-full transform-gpu animate-ping rounded-full opacity-75"></span>
-          <span className="bg-theme-peach relative inline-flex h-3 w-3 rounded-full"></span>
-        </span>
+        <div className="flex items-center gap-2.5 py-2 px-1 text-sm text-theme-text-muted animate-pulse">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="bg-theme-primary absolute inline-flex h-full w-full transform-gpu animate-ping rounded-full opacity-75"></span>
+            <span className="bg-theme-primary relative inline-flex h-2.5 w-2.5 rounded-full"></span>
+          </span>
+          <span>Loading {activeModelName || "model"}...</span>
+        </div>
       )}
       {isGeneratingImage && <ImageGeneratingSkeleton />}
     </div>
