@@ -25,6 +25,7 @@ const InputArea = ({
   onRemoveFile,
   isLoading,
   isGenerating,
+  isSwitching = false,
 }) => {
   const textareaRef = useRef(null);
   const { uploadFiles, uploading, currentFile } = useFileUploader({
@@ -162,7 +163,13 @@ const InputArea = ({
           value={input}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          placeholder={imageMode ? "Describe the image you want to generate..." : "Ask anything..."}
+          placeholder={
+            isSwitching
+              ? "Switching model in RAM, please wait..."
+              : imageMode
+                ? "Describe the image you want to generate..."
+                : "Ask anything..."
+          }
           aria-label="Message input"
           disabled={disabled}
           rows={1}

@@ -2,8 +2,9 @@ import { providersClient } from "@/lib/providersClient";
 import { CACHE_DURATIONS } from "@/shared";
 import { Menu, MenuButton, MenuItems, MenuItem } from "@headlessui/react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Loader2 } from "lucide-react";
 import ProviderLogo from "@/components/ui/ProviderLogo";
+import { MOCK_MODELS } from "@/lib/api";
 
 const VARIANTS = {
   text: {
@@ -25,7 +26,13 @@ const VARIANTS = {
   },
 };
 
-const ModelSelector = ({ type = "text", currentModel, onModelChange }) => {
+const ModelSelector = ({
+  type = "text",
+  currentModel,
+  onModelChange,
+  isSwitching = false,
+  switchingModelId = null,
+}) => {
   const variant = VARIANTS[type];
 
   const { data, isLoading } = useQuery({
@@ -34,18 +41,24 @@ const ModelSelector = ({ type = "text", currentModel, onModelChange }) => {
     staleTime: CACHE_DURATIONS.IMAGE_MODELS,
   });
 
-  const models = data?.models || [];
+  const models =
+    data?.models && data.models.length > 0
+      ? data.models
+      : type === "image"
+        ? []
+        : MOCK_MODELS;
+
   const currentModelData =
-    models.find((m) => m.model_id === currentModel) ||
+    models.find((m) => m.model_id === currentModel || m.id === currentModel) ||
     models.find((m) => m.is_default) ||
     models[0];
   const currentProviderId =
     currentModelData?.provider_name || currentModelData?.provider?.toLowerCase();
 
-  if (isLoading) {
+  if (isLoading && models.length === 0) {
     return (
       <div className="bg-theme-surface rounded-xl px-3 py-2 text-sm">
-        <span className="text-theme-text-muted">Loading...</span>
+        <span className="text-theme-text-muted">Loading models...</span>
       </div>
     );
   }
@@ -71,43 +84,64 @@ const ModelSelector = ({ type = "text", currentModel, onModelChange }) => {
   return (
     <Menu as="div" className="relative">
       <MenuButton
-        className={`${variant.buttonClass} text-theme-text flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold shadow-lg transition-all duration-200 hover:scale-105 active:scale-95`}>
+        disabled={isSwitching}
+        className={`${variant.buttonClass} text-theme-text flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold shadow-lg transition-all duration-200 ${
+          isSwitching
+            ? "cursor-wait opacity-90 border-theme-primary/40 bg-theme-surface-strong"
+            : "hover:scale-105 active:scale-95 cursor-pointer"
+        }`}>
         <span className="flex items-center gap-2">
           <ProviderLogo
             providerId={currentProviderId}
             displayName={currentModelData.provider_display_name}
             size="sm"
           />
-          {currentModelData.display_name}
+          <span>{currentModelData.display_name}</span>
+
+          {/* Model switching spinner state */}
+          {isSwitching && (
+            <span className="bg-theme-primary/10 text-theme-primary border border-theme-primary/20 flex items-center gap-1.5 rounded-lg px-2 py-0.5 text-xs font-medium animate-pulse">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <span>Switching model...</span>
+            </span>
+          )}
         </span>
-        <ChevronDown className="ui-open:rotate-180 h-4 w-4 transition-transform duration-200" />
+        <ChevronDown className="ui-open:rotate-180 h-4 w-4 transition-transform duration-200 opacity-70" />
       </MenuButton>
 
       <MenuItems className="bg-theme-surface border-theme-surface-strong animate-in fade-in zoom-in-95 absolute top-full left-0 z-50 mt-2 w-72 overflow-hidden rounded-xl border shadow-lg duration-100">
         <div className="max-h-96 overflow-y-auto p-1">
           {models.map((model) => {
             const providerId = model.provider_name || model.provider?.toLowerCase();
-            const isActive = currentModel === model.model_id;
+            const modelKey = model.model_id || model.id;
+            const isActive = currentModel === modelKey;
+            const isThisSwitching = isSwitching && switchingModelId === modelKey;
 
             return (
               <MenuItem
                 key={model.id}
                 as="button"
-                onClick={() => onModelChange(model.model_id)}
+                disabled={isSwitching}
+                onClick={() => onModelChange(modelKey)}
                 className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition-colors ${
                   isActive
                     ? variant.activeItemClass
                     : "hover:bg-theme-surface-strong/50 data-[focus]:bg-theme-surface-strong/50"
-                }`}>
+                } ${isSwitching ? "cursor-wait opacity-70" : ""}`}>
                 <div className="flex-1">
-                  <div className="text-theme-text font-medium">{model.display_name}</div>
+                  <div className="text-theme-text font-medium flex items-center gap-2">
+                    <span>{model.display_name}</span>
+                    {isThisSwitching && (
+                      <Loader2 className="h-3 w-3 animate-spin text-theme-primary" />
+                    )}
+                  </div>
                   <div className="text-theme-text-muted flex items-center gap-1.5 text-xs">
                     <ProviderLogo
                       providerId={providerId}
                       displayName={model.provider_display_name}
                       size="xs"
                     />
-                    {model.provider_display_name}
+                    <span>{model.description || model.provider_display_name}</span>
                   </div>
                 </div>
                 {model.is_default && (

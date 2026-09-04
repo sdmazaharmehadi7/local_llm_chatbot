@@ -6,7 +6,7 @@ export const useUiState = create(
     (set) => ({
       sidebarOpen: true,
       sidebarCollapsed: false,
-      preferredModel: "claude-sonnet-4-5",
+      preferredModel: "qwen3:8b",
       preferredImageModel: null,
       theme: "dark",
       autoScroll: true,

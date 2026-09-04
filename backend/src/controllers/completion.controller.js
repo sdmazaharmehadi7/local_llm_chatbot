@@ -12,6 +12,9 @@
  *     memoryEnabled: boolean
  *   }
  *
+ * Enforces one-model-at-a-time RAM management:
+ * Verifies that the requested model is valid and loaded before streaming.
+ *
  * Returns an SSE stream in the AI SDK v6 UI Message Stream protocol:
  *   data: {"type":"start","messageId":"<uuid>"}\n\n
  *   data: {"type":"start-step"}\n\n
@@ -24,7 +27,13 @@
  *   data: [DONE]\n\n
  */
 
-import { streamChatFromOllama } from "../services/ollama.service.js";
+import {
+  streamChatFromOllama,
+  getActiveModel,
+  isSwitching,
+  switchModel,
+} from "../services/ollama.service.js";
+import { isValidModelId } from "../constants/models.config.js";
 
 /** Serialize one UI-message-stream chunk as an SSE data line. */
 function sseChunk(part) {
@@ -48,9 +57,9 @@ function toOllamaMessages(messages) {
  */
 export async function postCompletion(req, res) {
   const { id: chatId } = req.params;
-  const { messages } = req.body;
+  const { messages, model: requestedModel } = req.body;
 
-  // ── Validate request ────────────────────────────────────────────────────────
+  // ── 1. Validate request ─────────────────────────────────────────────────────
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({
       success: false,
@@ -58,7 +67,29 @@ export async function postCompletion(req, res) {
     });
   }
 
-  // ── Set SSE headers ─────────────────────────────────────────────────────────
+  // ── 2. Validate requested model ─────────────────────────────────────────────
+  let targetModel = requestedModel || getActiveModel();
+  if (requestedModel && !isValidModelId(requestedModel)) {
+    return res.status(400).json({
+      success: false,
+      error: `Selected model "${requestedModel}" is not available locally.`,
+    });
+  }
+
+  // ── 3. Ensure target model is loaded in RAM (one-model-at-a-time) ───────────
+  try {
+    if (isSwitching() || targetModel !== getActiveModel()) {
+      await switchModel(targetModel);
+    }
+  } catch (err) {
+    console.error(`[completion.controller] Failed to ensure model ${targetModel}:`, err.message);
+    return res.status(500).json({
+      success: false,
+      error: `Unable to prepare model "${targetModel}": ${err.message}`,
+    });
+  }
+
+  // ── 4. Set SSE headers ──────────────────────────────────────────────────────
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -66,31 +97,37 @@ export async function postCompletion(req, res) {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  // ── Generate stable message ID for assistant turn ───────────────────────────
+  // ── 5. Generate stable message ID for assistant turn ────────────────────────
   const messageId = crypto.randomUUID();
 
-  // ── Send stream start events ────────────────────────────────────────────────
+  // ── 6. Send stream start events ─────────────────────────────────────────────
   res.write(sseChunk({ type: "start", messageId }));
   res.write(sseChunk({ type: "start-step" }));
   res.write(sseChunk({ type: "text-start", id: "text-1" }));
 
-  // ── Stream from Ollama ──────────────────────────────────────────────────────
+  // ── 7. Stream from Ollama ───────────────────────────────────────────────────
   const ollamaMessages = toOllamaMessages(messages);
 
   let finishReason = "stop";
   let aborted = false;
   let inThinking = false;
 
-  // Detect genuine client disconnect (e.g. user closes tab or clicks stop)
-  // Check !res.writableEnded because 'close' always fires on res completion
+  // Detect client disconnect (e.g. user closes tab or clicks stop)
   res.on("close", () => {
     if (!res.writableEnded) {
       aborted = true;
     }
   });
 
+  console.log(`[CHAT] Using model: ${targetModel}`);
+  console.log(`[CHAT] Streaming started`);
+
   try {
-    const ollamaStream = await streamChatFromOllama(ollamaMessages, null);
+    const { stream: ollamaStream } = await streamChatFromOllama(
+      ollamaMessages,
+      null,
+      targetModel
+    );
 
     const reader = ollamaStream.getReader();
     const decoder = new TextDecoder();
@@ -98,7 +135,7 @@ export async function postCompletion(req, res) {
 
     while (true) {
       if (aborted) {
-        reader.cancel().catch(() => { });
+        reader.cancel().catch(() => {});
         break;
       }
 
@@ -123,7 +160,7 @@ export async function postCompletion(req, res) {
           continue;
         }
 
-        // 1. Handle thinking tokens (for reasoning models like qwen3, DeepSeek R1)
+        // 1. Handle thinking tokens (for reasoning models like qwen3)
         const thinkingDelta = chunk?.message?.thinking;
         if (thinkingDelta) {
           if (!inThinking) {
@@ -186,10 +223,12 @@ export async function postCompletion(req, res) {
     res.write(sseChunk({ type: "text-delta", id: "text-1", delta: "\n</think>\n\n" }));
   }
 
-  // ── Send stream end events ──────────────────────────────────────────────────
+  // ── 8. Send stream end events ───────────────────────────────────────────────
   res.write(sseChunk({ type: "text-end", id: "text-1" }));
   res.write(sseChunk({ type: "finish-step" }));
   res.write(sseChunk({ type: "finish", finishReason }));
   res.write("data: [DONE]\n\n");
   res.end();
+
+  console.log(`[CHAT] Streaming completed`);
 }

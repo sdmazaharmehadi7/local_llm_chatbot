@@ -11,10 +11,11 @@ import { useCreateChatMutation, useCreateMessageMutation } from "@/hooks/useChat
 import { useImageGeneration } from "@/hooks/useImageGeneration";
 import { useUiState } from "@/state/useUiState";
 import { providersClient } from "@/lib/providersClient";
+import { MOCK_MODELS } from "@/lib/api";
 import { CACHE_DURATIONS } from "@/shared";
 import { useQuery } from "@tanstack/react-query";
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast, Toaster } from "sonner";
 import InputArea from "./InputArea";
 import MessageList from "./MessageList";
@@ -42,15 +43,57 @@ const ChatInterface = ({ chatId }) => {
     staleTime: CACHE_DURATIONS.IMAGE_MODELS,
   });
 
-  const currentModelData = (modelsData?.models || []).find((m) => m.model_id === preferredModel);
+  const allModels = modelsData?.models?.length > 0 ? modelsData.models : MOCK_MODELS;
+  const currentModelData = (allModels || []).find(
+    (m) => m.model_id === preferredModel || m.id === preferredModel
+  );
   const modelSupportsTools = !!currentModelData?.metadata?.supports_tools;
 
-  const handleModelChange = (modelId) => {
-    setPreferredModel(modelId);
+  const [isSwitching, setIsSwitching] = useState(false);
+  const [switchingModelId, setSwitchingModelId] = useState(null);
+
+  // Sync active model with backend on initial load if available
+  useEffect(() => {
+    let active = true;
+    providersClient
+      .getModelStatus()
+      .then((status) => {
+        if (active && status?.activeModel) {
+          setPreferredModel(status.activeModel);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleModelChange = async (modelId) => {
+    if (isSwitching || modelId === preferredModel) return;
+
     clearError();
-    const newModel = (modelsData?.models || []).find((m) => m.model_id === modelId);
-    if (!newModel?.metadata?.supports_tools) {
-      setWebSearchEnabled(false);
+    setIsSwitching(true);
+    setSwitchingModelId(modelId);
+
+    try {
+      // Notify backend to unload previous model and load target model in RAM
+      await providersClient.selectModel(modelId);
+      setPreferredModel(modelId);
+
+      const newModel = (allModels || []).find(
+        (m) => m.model_id === modelId || m.id === modelId
+      );
+      if (!newModel?.metadata?.supports_tools) {
+        setWebSearchEnabled(false);
+      }
+
+      toast.success(`${newModel?.display_name || modelId} is ready`);
+    } catch (err) {
+      console.error("Failed to switch model:", err);
+      toast.error(err.message || "Unable to switch model");
+    } finally {
+      setIsSwitching(false);
+      setSwitchingModelId(null);
     }
   };
 
@@ -163,7 +206,12 @@ const ChatInterface = ({ chatId }) => {
               onModelChange={setPreferredImageModel}
             />
           ) : (
-            <ModelSelector currentModel={preferredModel} onModelChange={handleModelChange} />
+            <ModelSelector
+              currentModel={preferredModel}
+              onModelChange={handleModelChange}
+              isSwitching={isSwitching}
+              switchingModelId={switchingModelId}
+            />
           )}
 
           <ToolbarGroup>
@@ -207,7 +255,7 @@ const ChatInterface = ({ chatId }) => {
               handleInputChange={handleInputChange}
               handleSubmit={handleSubmit}
               voiceControls={voice}
-              disabled={isLoading || isGenerating}
+              disabled={isLoading || isGenerating || isSwitching}
               onImageSubmit={handleImageSubmit}
               webSearchEnabled={webSearchEnabled}
               onToggleWebSearch={toggleWebSearch}
@@ -218,6 +266,7 @@ const ChatInterface = ({ chatId }) => {
               onRemoveFile={removeFile}
               isLoading={isLoading}
               isGenerating={isGenerating}
+              isSwitching={isSwitching}
             />
           </div>
         </div>

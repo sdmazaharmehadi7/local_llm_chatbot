@@ -4,9 +4,7 @@
  * React -> api/service layer -> http://localhost:5000 (Express) -> Ollama (http://localhost:11434)
  */
 
-export const API_BASE =
-  import.meta.env.VITE_API_BASE ||
-  (import.meta.env.DEV ? "http://localhost:5000" : "");
+export const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 /**
  * Perform a centralized API fetch with credentials and JSON defaults.
@@ -48,51 +46,54 @@ export const MOCK_USER = {
 
 export const MOCK_MODELS = [
   {
-    id: "ollama-llama3.2",
-    model_id: "llama3.2:latest",
-    name: "Llama 3.2",
-    display_name: "Llama 3.2 (Local)",
+    id: "qwen3:8b",
+    model_id: "qwen3:8b",
+    name: "Qwen3 8B",
+    display_name: "Qwen3 8B",
     provider: "ollama",
     provider_id: "ollama",
+    provider_display_name: "Ollama",
     type: "text",
     enabled: true,
     is_default: true,
-    context_window: 128000,
-    metadata: {
-      supports_tools: true,
-      description: "Meta Llama 3.2 local model via Ollama",
-    },
-  },
-  {
-    id: "ollama-deepseek-r1",
-    model_id: "deepseek-r1:latest",
-    name: "DeepSeek R1",
-    display_name: "DeepSeek R1 (Reasoning)",
-    provider: "ollama",
-    provider_id: "ollama",
-    type: "text",
-    enabled: true,
-    is_default: false,
-    context_window: 64000,
+    context_window: 40960,
     metadata: {
       supports_tools: false,
-      description: "DeepSeek R1 reasoning model with <think> block parsing",
+      description: "General reasoning and chat",
     },
   },
   {
-    id: "ollama-mistral",
-    model_id: "mistral:latest",
-    name: "Mistral",
-    display_name: "Mistral 7B (Local)",
+    id: "qwen2.5-coder:7b",
+    model_id: "qwen2.5-coder:7b",
+    name: "Qwen2.5 Coder 7B",
+    display_name: "Qwen2.5 Coder 7B",
     provider: "ollama",
     provider_id: "ollama",
+    provider_display_name: "Ollama",
     type: "text",
     enabled: true,
     is_default: false,
-    context_window: 32000,
+    context_window: 32768,
     metadata: {
       supports_tools: true,
-      description: "Mistral 7B local model via Ollama",
+      description: "Coding and debugging",
+    },
+  },
+  {
+    id: "qwen2.5vl:7b",
+    model_id: "qwen2.5vl:7b",
+    name: "Qwen2.5 VL 7B",
+    display_name: "Qwen2.5 VL 7B",
+    provider: "ollama",
+    provider_id: "ollama",
+    provider_display_name: "Ollama",
+    type: "text",
+    enabled: true,
+    is_default: false,
+    context_window: 128000,
+    metadata: {
+      supports_tools: false,
+      description: "Images and visual documents",
     },
   },
 ];

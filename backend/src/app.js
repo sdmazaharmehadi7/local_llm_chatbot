@@ -15,6 +15,7 @@ import "dotenv/config";
 
 import chatRoutes from "./routes/chat.routes.js";
 import chatsRoutes from "./routes/chats.routes.js";
+import modelsRoutes from "./routes/models.routes.js";
 import { checkOllamaHealth } from "./services/ollama.service.js";
 
 const app = express();
@@ -25,7 +26,8 @@ const app = express();
 app.use(
   cors({
     origin: process.env.FRONTEND_URL || "http://localhost:5173",
-    methods: ["GET", "POST", "OPTIONS"],
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
@@ -48,33 +50,8 @@ app.get("/api/health", async (_req, res) => {
   });
 });
 
-/**
- * GET /api/models
- * Returns available models for the frontend model selector
- */
-app.get("/api/models", (_req, res) => {
-  const modelName = process.env.OLLAMA_MODEL || "qwen3:8b";
-  return res.json({
-    models: [
-      {
-        id: "ollama-qwen3",
-        model_id: modelName,
-        name: "Qwen 3 8B",
-        display_name: "Qwen 3 (8B Local)",
-        provider: "ollama",
-        provider_id: "ollama",
-        type: "text",
-        enabled: true,
-        is_default: true,
-        context_window: 40960,
-        metadata: {
-          supports_tools: true,
-          description: "Local Qwen 3 8B model via Ollama with reasoning support",
-        },
-      },
-    ],
-  });
-});
+// Models management — discovery, status, switching (one model at a time in RAM)
+app.use("/api/models", modelsRoutes);
 
 // Legacy single-turn chat (kept for backend testing with curl)
 app.use("/api/chat", chatRoutes);

@@ -70,7 +70,8 @@ export const providersClient = {
 
   async getEnabledModels() {
     try {
-      return await apiFetch("/api/models");
+      const res = await apiFetch("/api/models");
+      return res?.models?.length ? res : { models: MOCK_MODELS };
     } catch {
       return { models: MOCK_MODELS };
     }
@@ -79,10 +80,22 @@ export const providersClient = {
   async getEnabledModelsByType(modelType) {
     try {
       const params = modelType ? `?type=${modelType}` : "";
-      return await apiFetch(`/api/models${params}`);
+      const res = await apiFetch(`/api/models${params}`);
+      return res?.models?.length ? res : { models: MOCK_MODELS };
     } catch {
-      return { models: MOCK_MODELS.filter((m) => !modelType || m.type === modelType) };
+      return { models: MOCK_MODELS };
     }
+  },
+
+  async getModelStatus() {
+    return apiFetch("/api/models/status");
+  },
+
+  async selectModel(model) {
+    return apiFetch("/api/models/select", {
+      method: "POST",
+      body: JSON.stringify({ model }),
+    });
   },
 
   async updateModel(modelId, updates) {
