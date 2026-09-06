@@ -96,6 +96,23 @@ export const MOCK_MODELS = [
       description: "Images and visual documents",
     },
   },
+  {
+    id: "gemini-3.6-flash",
+    model_id: "gemini-3.6-flash",
+    name: "Gemini 3.6 Flash",
+    display_name: "Gemini 3.6 Flash",
+    provider: "google",
+    provider_id: "google",
+    provider_display_name: "Google",
+    type: "text",
+    enabled: true,
+    is_default: false,
+    context_window: 1048576,
+    metadata: {
+      supports_tools: false,
+      description: "Fast and capable Google model",
+    },
+  },
 ];
 
 export const MOCK_INITIAL_CHATS = [
@@ -116,12 +133,12 @@ export const MOCK_INITIAL_MESSAGES = [
     chat_id: "welcome-chat",
     role: "assistant",
     content:
-      "# Welcome to Local Chat!\n\nThis frontend is running on **React + Vite + Tailwind CSS**.\n\n### Status\n- Ready to connect to your Node.js/Express backend on `http://localhost:5000`.\n- Designed for local Ollama open-weight models (`qwen3:8b`, `qwen2.5-coder:7b`, `qwen2.5vl:7b`).\n- All Local Chat UI components, dark/light themes, markdown rendering, code syntax highlighting, and responsive layouts are active.",
+      "# Welcome to Local Chat!\n\nThis frontend is running on **React + Vite + Tailwind CSS**.\n\n### Available Models\n- **Qwen3 8B** — General reasoning and chat (Ollama)\n- **Qwen2.5 Coder 7B** — Coding and debugging (Ollama)\n- **Qwen2.5 VL 7B** — Images and visual documents (Ollama)\n- **Gemini 3.6 Flash** — Fast and capable Google model (Cloud — requires `GEMINI_API_KEY` in `.env`)\n\n### How to use\nSelect a model from the dropdown above and start chatting!",
     created_at: new Date().toISOString(),
     parts: [
       {
         type: "text",
-        text: "# Welcome to Local Chat!\n\nThis frontend is running on **React + Vite + Tailwind CSS**.\n\n### Status\n- Ready to connect to your Node.js/Express backend on `http://localhost:5000`.\n- Designed for local Ollama open-weight models (`qwen3:8b`, `qwen2.5-coder:7b`, `qwen2.5vl:7b`).\n- All Local Chat UI components, dark/light themes, markdown rendering, code syntax highlighting, and responsive layouts are active.",
+        text: "# Welcome to Local Chat!\n\nThis frontend is running on **React + Vite + Tailwind CSS**.\n\n### Available Models\n- **Qwen3 8B** — General reasoning and chat (Ollama)\n- **Qwen2.5 Coder 7B** — Coding and debugging (Ollama)\n- **Qwen2.5 VL 7B** — Images and visual documents (Ollama)\n- **Gemini 3.6 Flash** — Fast and capable Google model (Cloud — requires `GEMINI_API_KEY` in `.env`)\n\n### How to use\nSelect a model from the dropdown above and start chatting!",
       },
     ],
   },

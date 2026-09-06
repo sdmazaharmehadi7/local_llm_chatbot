@@ -67,7 +67,15 @@ export const chatsClient = {
   async getChats() {
     try {
       const data = await chatsFetch("");
-      return data.chats;
+      if (Array.isArray(data?.chats) && data.chats.length > 0) {
+        saveLocalChats(data.chats);
+        return data.chats;
+      }
+      const local = getLocalChats();
+      if (local && local.length > 0) {
+        return local;
+      }
+      return data?.chats || [];
     } catch {
       return getLocalChats();
     }
@@ -75,38 +83,41 @@ export const chatsClient = {
 
   async getChat(chatId) {
     try {
-      return await chatsFetch(`/${chatId}`);
-    } catch {
-      const chats = getLocalChats();
-      const found = chats.find((c) => c.id === chatId);
-      if (found) return found;
-      return {
-        id: chatId,
-        title: "New Chat",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-    }
+      const data = await chatsFetch(`/${chatId}`);
+      const chat = data?.chat || data;
+      if (chat && chat.id) return chat;
+    } catch {}
+    const chats = getLocalChats();
+    const found = chats.find((c) => c.id === chatId);
+    if (found) return found;
+    return {
+      id: chatId,
+      title: "New Chat",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
   },
 
   async createChat(id = null, title = null, folderId = null) {
+    const newChat = {
+      id: id || `chat-${Date.now()}`,
+      title: title || "New Chat",
+      folderId: folderId || null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      pinnedAt: null,
+      archivedAt: null,
+    };
+    const chats = [newChat, ...getLocalChats().filter((c) => c.id !== newChat.id)];
+    saveLocalChats(chats);
+
     try {
-      return await chatsFetch("", {
+      const data = await chatsFetch("", {
         method: "POST",
-        body: JSON.stringify({ id, title, folder_id: folderId }),
+        body: JSON.stringify({ id: newChat.id, title: newChat.title, folder_id: folderId }),
       });
+      return data?.chat || data || newChat;
     } catch {
-      const newChat = {
-        id: id || `chat-${Date.now()}`,
-        title: title || "New Chat",
-        folderId: folderId || null,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        pinnedAt: null,
-        archivedAt: null,
-      };
-      const chats = [newChat, ...getLocalChats()];
-      saveLocalChats(chats);
       return newChat;
     }
   },
@@ -141,30 +152,50 @@ export const chatsClient = {
   async getMessages(chatId) {
     try {
       const data = await chatsFetch(`/${chatId}/messages`);
-      return data.messages;
+      if (Array.isArray(data?.messages) && data.messages.length > 0) {
+        saveLocalMessages(chatId, data.messages);
+        return data.messages;
+      }
+      const local = getLocalMessages(chatId);
+      if (local && local.length > 0) {
+        return local;
+      }
+      return data?.messages || [];
     } catch {
       return getLocalMessages(chatId);
     }
   },
 
   async createMessage(chatId, message) {
-    try {
-      return await chatsFetch(`/${chatId}/messages`, {
-        method: "POST",
-        body: JSON.stringify(message),
-      });
-    } catch {
-      const msgs = getLocalMessages(chatId);
-      const newMsg = {
-        id: message.id || `msg-${Date.now()}`,
-        chatId,
-        role: message.role || "user",
-        content: message.content || "",
-        parts: message.parts || [{ type: "text", text: message.content || "" }],
-        createdAt: new Date().toISOString(),
-      };
+    const msgs = getLocalMessages(chatId);
+    const newMsg = {
+      id: message.id || `msg-${Date.now()}`,
+      chatId,
+      role: message.role || "user",
+      content: message.content || "",
+      parts: message.parts || [{ type: "text", text: message.content || "" }],
+      createdAt: message.createdAt
+        ? typeof message.createdAt === "number"
+          ? new Date(message.createdAt).toISOString()
+          : message.createdAt
+        : new Date().toISOString(),
+      model: message.model || null,
+      metadata: message.metadata || null,
+    };
+    const exists = msgs.some((m) => m.id === newMsg.id);
+    if (!exists) {
       msgs.push(newMsg);
       saveLocalMessages(chatId, msgs);
+    }
+
+    try {
+      const data = await chatsFetch(`/${chatId}/messages`, {
+        method: "POST",
+        body: JSON.stringify(newMsg),
+      });
+      const serverMsg = data?.message || data;
+      return serverMsg?.id ? serverMsg : newMsg;
+    } catch {
       return newMsg;
     }
   },

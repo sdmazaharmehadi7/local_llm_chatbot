@@ -50,11 +50,17 @@ const ToolbarButton = ({ onClick, icon: Icon, title, ariaLabel, active = false }
   </button>
 );
 
+const InlineCode = ({ children }) => (
+  <code className="bg-theme-surface-strong rounded px-1.5 py-0.5 text-sm font-medium">
+    {children}
+  </code>
+);
+
 /**
  * Code block with Shiki syntax highlighting.
  * Supports dual themes via CSS variables (responds to .dark class).
  */
-const CodeBlock = ({ inline, className, children, node }) => {
+const HighlightedCodeBlock = ({ className, children }) => {
   const [copied, setCopied] = useState(false);
   const [wrap, setWrap] = useState(false);
   const [highlightedHtml, setHighlightedHtml] = useState(null);
@@ -62,19 +68,6 @@ const CodeBlock = ({ inline, className, children, node }) => {
 
   const lang = className?.match(/language-(\w+)/)?.[1] ?? "";
   const code = String(children).trim();
-
-  // Detect inline code: explicit inline prop, no language class, or single-line without parent pre
-  // react-markdown v9+ doesn't reliably pass inline prop, so we use heuristics
-  const isInline = inline || (!className && !code.includes("\n") && node?.tagName !== "pre");
-
-  // Inline code - no highlighting needed
-  if (isInline) {
-    return (
-      <code className="bg-theme-surface-strong rounded px-1.5 py-0.5 text-sm font-medium">
-        {children}
-      </code>
-    );
-  }
 
   // Highlight code asynchronously
   useEffect(() => {
@@ -178,6 +171,23 @@ const CodeBlock = ({ inline, className, children, node }) => {
         </pre>
       )}
     </div>
+  );
+};
+
+const CodeBlock = ({ inline, className, children, node }) => {
+  const code = String(children).trim();
+
+  // Detect inline code: explicit inline prop, no language class, or single-line without parent pre
+  const isInline = inline || (!className && !code.includes("\n") && node?.tagName !== "pre");
+
+  if (isInline) {
+    return <InlineCode>{children}</InlineCode>;
+  }
+
+  return (
+    <HighlightedCodeBlock className={className} node={node}>
+      {children}
+    </HighlightedCodeBlock>
   );
 };
 

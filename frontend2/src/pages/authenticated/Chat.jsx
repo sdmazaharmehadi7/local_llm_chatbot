@@ -23,21 +23,6 @@ const Chat = ({ chatId }) => {
       document.title = appName;
     };
   }, [chat?.title, appName]);
-  const hasAttemptedRedirect = useRef(false);
-
-  // Auto-redirect to new chat if current chat is missing/deleted
-  if (isError && !hasAttemptedRedirect.current && !createChatMutation.isPending) {
-    hasAttemptedRedirect.current = true;
-    createChatMutation.mutate(
-      {},
-      {
-        onSuccess: (newChat) => {
-          navigateToChat(newChat.id, { replace: true });
-        },
-      }
-    );
-  }
-
   const handleCreateNewChat = () => {
     createChatMutation.mutate(
       {},
@@ -49,17 +34,15 @@ const Chat = ({ chatId }) => {
     );
   };
 
-  if (isLoading || createChatMutation.isPending) {
+  if (isLoading && !chat) {
     return (
       <div className="flex h-full items-center justify-center">
-        <div className="text-theme-text-muted">
-          {createChatMutation.isPending ? "Redirecting to a new chat..." : "Loading chat..."}
-        </div>
+        <div className="text-theme-text-muted">Loading chat...</div>
       </div>
     );
   }
 
-  if (isError) {
+  if (isError && !chat) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
         <ErrorBanner

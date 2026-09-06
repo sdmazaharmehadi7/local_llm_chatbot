@@ -118,9 +118,7 @@ export function useChatStream({
     model: msg.role === "assistant" ? modelRef.current : msg.model,
   }));
 
-  const messages = isStreaming
-    ? deduplicateMessages([...formattedMessages, ...streamingMessagesWithModel])
-    : formattedMessages;
+  const messages = deduplicateMessages([...formattedMessages, ...streamingMessagesWithModel]);
 
   async function send({ id, content, fileIds = [], createdAt }) {
     const message = {

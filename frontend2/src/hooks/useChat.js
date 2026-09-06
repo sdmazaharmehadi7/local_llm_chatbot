@@ -41,10 +41,12 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
     stream.clearError();
 
     try {
-      await saveUserMessage(
+      // Save user message immediately to local state/server
+      saveUserMessage(
         { id: messageId, content: trimmedContent, fileIds, createdAt, model },
         chatId
-      );
+      ).catch((err) => console.error("Failed to save user message", err));
+
       await stream.send({ id: messageId, content: trimmedContent, fileIds, createdAt });
     } catch (err) {
       console.error("Failed to send message", err);
@@ -52,7 +54,9 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
   }
 
   function handleSubmit(e) {
-    e.preventDefault();
+    if (e?.preventDefault) {
+      e.preventDefault();
+    }
     submitMessage({ content: input, fileIds: inputFiles.map((f) => f.id) });
   }
 

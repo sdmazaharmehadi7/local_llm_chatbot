@@ -87,13 +87,15 @@ const indexRoute = createRoute({
   component: IndexRouteGuard,
 });
 
+const ChatRouteComponent = () => {
+  const { chatId } = chatRoute.useParams();
+  return <Chat chatId={chatId} />;
+};
+
 const chatRoute = createRoute({
   getParentRoute: () => protectedRoute,
   path: "/chat/$chatId",
-  component: () => {
-    const { chatId } = chatRoute.useParams();
-    return <Chat chatId={chatId} />;
-  },
+  component: ChatRouteComponent,
 });
 
 const adminRoute = createRoute({
