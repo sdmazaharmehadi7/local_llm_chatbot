@@ -1,4 +1,4 @@
-import { apiFetch, MOCK_INITIAL_CHATS, MOCK_INITIAL_MESSAGES } from "@/lib/api";
+import { apiFetch, MOCK_INITIAL_CHATS } from "@/lib/api";
 
 const SNAKE_TO_CAMEL = {
   created_at: "createdAt",

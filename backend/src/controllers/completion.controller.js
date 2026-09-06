@@ -48,7 +48,7 @@ function sseChunk(part) {
 function toOllamaMessages(messages) {
   return messages.map(({ role, content }) => ({
     role,
-    content: content || "",
+    content: (content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(),
   }));
 }
 
@@ -265,7 +265,9 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
           if (!inThinking) {
             inThinking = true;
             res.write(sseChunk({ type: "text-delta", id: "text-1", delta: "<think>\n" }));
+            fullResponseText += "<think>\n";
           }
+          fullResponseText += thinkingDelta;
           res.write(sseChunk({ type: "text-delta", id: "text-1", delta: thinkingDelta }));
         }
 
@@ -275,6 +277,7 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
           if (inThinking) {
             inThinking = false;
             res.write(sseChunk({ type: "text-delta", id: "text-1", delta: "\n</think>\n\n" }));
+            fullResponseText += "\n</think>\n\n";
           }
           fullResponseText += contentDelta;
           res.write(sseChunk({ type: "text-delta", id: "text-1", delta: contentDelta }));
@@ -285,6 +288,7 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
           if (inThinking) {
             inThinking = false;
             res.write(sseChunk({ type: "text-delta", id: "text-1", delta: "\n</think>\n\n" }));
+            fullResponseText += "\n</think>\n\n";
           }
           const doneReason = chunk?.done_reason || "stop";
           finishReason = doneReason === "stop" ? "stop" : "other";
@@ -301,6 +305,7 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
           if (inThinking) {
             inThinking = false;
             res.write(sseChunk({ type: "text-delta", id: "text-1", delta: "\n</think>\n\n" }));
+            fullResponseText += "\n</think>\n\n";
           }
           fullResponseText += contentDelta;
           res.write(sseChunk({ type: "text-delta", id: "text-1", delta: contentDelta }));
@@ -322,6 +327,7 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
   // Close thinking block if still open
   if (inThinking) {
     res.write(sseChunk({ type: "text-delta", id: "text-1", delta: "\n</think>\n\n" }));
+    fullResponseText += "\n</think>\n\n";
   }
 
   res.write(sseChunk({ type: "text-end", id: "text-1" }));

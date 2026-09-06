@@ -1,14 +1,19 @@
 import { DefaultChatTransport } from "ai";
 import { useChat as useAIChat } from "@ai-sdk/react";
-import { useMemo, useRef } from "react";
-import { deduplicateMessages, ensureTimestamp, getMessageTimestamp } from "@/lib/messageUtils";
+import { useEffect, useMemo, useRef } from "react";
+import {
+  deduplicateMessages,
+  ensureTimestamp,
+  extractTextContent,
+  getMessageTimestamp,
+} from "@/lib/messageUtils";
 import { MESSAGE_CONSTANTS } from "@/shared";
 
 function trimMessageHistory(messages) {
   return messages.slice(-MESSAGE_CONSTANTS.MAX_HISTORY).filter((message) => {
     if (message.role !== "assistant") return true;
-    if (!message.parts?.length) return false;
-    return message.parts.some((part) => part.type === "text" && part.text.trim().length > 0);
+    const text = extractTextContent(message);
+    return text.trim().length > 0;
   });
 }
 
@@ -17,7 +22,7 @@ function formatMessagesForTransport(messages) {
   return pruned.map((message) => ({
     id: message.id ?? crypto.randomUUID(),
     role: message.role,
-    content: (message.parts ?? []).map((part) => (part.type === "text" ? part.text : "")).join(""),
+    content: extractTextContent(message),
     fileIds: message.fileIds || [],
   }));
 }
@@ -80,6 +85,7 @@ export function useChatStream({
 
   const {
     messages: streamingMessages,
+    setMessages,
     sendMessage,
     regenerate,
     status,
@@ -91,10 +97,7 @@ export function useChatStream({
     messages: [],
     transport,
     onFinish: async ({ message }) => {
-      const content = message.parts
-        .filter((part) => part.type === "text")
-        .map((part) => part.text)
-        .join("");
+      const content = extractTextContent(message);
 
       const toolParts =
         message.parts?.filter((p) => p.type === "tool-invocation" && p.state === "result") || [];
@@ -108,17 +111,31 @@ export function useChatStream({
           createdAt: getMessageTimestamp(message),
         });
       }
+
+      // Reset AI SDK's temporary streaming messages buffer once saved to MongoDB
+      setMessages([]);
     },
   });
 
+  // Clear AI SDK's temporary streaming messages when chat changes
+  useEffect(() => {
+    setMessages([]);
+  }, [chatId, setMessages]);
+
   const isStreaming = status === "streaming" || status === "submitted";
 
-  const streamingMessagesWithModel = streamingMessages.map((msg) => ({
-    ...ensureTimestamp(msg, messageTimestampsRef),
-    model: msg.role === "assistant" ? modelRef.current : msg.model,
-  }));
+  // While streaming, take only the active streaming assistant message from useAIChat
+  // (avoiding re-injecting all old accumulated streaming messages)
+  const activeStreamingMessages = isStreaming
+    ? streamingMessages.map((msg) => ({
+        ...ensureTimestamp(msg, messageTimestampsRef),
+        model: msg.role === "assistant" ? modelRef.current : msg.model,
+      }))
+    : [];
 
-  const messages = deduplicateMessages([...formattedMessages, ...streamingMessagesWithModel]);
+  const messages = isStreaming
+    ? deduplicateMessages([...formattedMessages, ...activeStreamingMessages])
+    : formattedMessages;
 
   async function send({ id, content, fileIds = [], createdAt }) {
     const message = {

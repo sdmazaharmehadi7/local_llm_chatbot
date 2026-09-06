@@ -130,15 +130,16 @@ export function useCreateMessageMutation() {
         metadata: message.metadata,
       });
 
-      if (message.role === "user") {
-        // Insert optimistic message into cache
-        queryClient.setQueryData(chatKeys.messages(userId, chatId), (old) => {
-          if (!old) {
-            return [optimisticMessage];
-          }
-          return [...old, optimisticMessage];
-        });
-      }
+      // Insert optimistic message into cache (for both user and completed assistant messages)
+      queryClient.setQueryData(chatKeys.messages(userId, chatId), (old) => {
+        if (!old) {
+          return [optimisticMessage];
+        }
+        if (old.some((m) => m.id === optimisticMessage.id)) {
+          return old;
+        }
+        return [...old, optimisticMessage];
+      });
 
       // Bump chat to top of list with updated timestamp
       queryClient.setQueryData(chatKeys.list(userId), (old) => {

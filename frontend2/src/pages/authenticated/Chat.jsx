@@ -4,7 +4,7 @@ import { useChatNavigation } from "@/hooks/useChatNavigation";
 import { useChatQuery, useCreateChatMutation } from "@/hooks/useChatsQuery";
 import { useAppSettingsQuery } from "@/state/useAppSettings";
 import { useNavigate } from "@tanstack/react-router";
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect } from "react";
 
 const Chat = ({ chatId }) => {
   const navigate = useNavigate();

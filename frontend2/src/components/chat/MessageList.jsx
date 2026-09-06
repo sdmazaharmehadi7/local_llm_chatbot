@@ -8,20 +8,14 @@ function sortMessagesWithUserFirst(messages) {
     const aTime = getMessageTimestamp(a, 0);
     const bTime = getMessageTimestamp(b, 0);
 
-    if (
-      aTime > 0 &&
-      bTime > 0 &&
-      Math.abs(aTime - bTime) < MESSAGE_CONSTANTS.TIMESTAMP_SIMILARITY_MS
-    ) {
-      if (a.role === "user" && b.role === "assistant") {
-        return -1;
-      }
-      if (a.role === "assistant" && b.role === "user") {
-        return 1;
-      }
+    if (aTime !== bTime) {
+      return aTime - bTime;
     }
 
-    return aTime - bTime;
+    // Stable tie-breaker: if identical timestamp, user question comes before assistant answer
+    if (a.role === "user" && b.role === "assistant") return -1;
+    if (a.role === "assistant" && b.role === "user") return 1;
+    return 0;
   });
 }
 
