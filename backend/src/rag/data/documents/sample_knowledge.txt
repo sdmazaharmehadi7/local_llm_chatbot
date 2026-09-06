@@ -1,0 +1,18 @@
+Local Chatbot Project Knowledge Document
+
+Project Name: Local LLM Chatbot
+Architecture: React Frontend (Vite) + Express Backend (Node.js) + Local Ollama Engine.
+Default Model: Qwen3 8B (qwen3:8b)
+Supported Models: Qwen3 8B, Qwen2.5 Coder 7B, Qwen2.5 VL 7B.
+
+Key Features:
+1. Strict One-Model-at-a-Time RAM enforcement to ensure memory safety.
+2. Full RAG (Retrieval-Augmented Generation) capability with local embedding generation.
+3. Completely local execution with zero cloud dependencies or data leaks.
+4. Support for PDF, Markdown, and TXT document ingestion.
+
+RAG Configuration Defaults:
+- Chunk Size: 500 characters
+- Chunk Overlap: 50 characters
+- Top K Retrieval: 3 document chunks
+- Vector Metric: Cosine Similarity

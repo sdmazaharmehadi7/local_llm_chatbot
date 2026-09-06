@@ -6,11 +6,18 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "rag:test": "node src/rag/test-rag.js",
+    "rag:build": "node -e \"import('./src/rag/index.js').then(m => m.ragPipeline.buildIndex())\"",
+    "db:migrate": "node src/db/migrate.js",
+    "db:test": "node src/db/test-connection.js"
   },
   "dependencies": {
+    "@google/genai": "^2.21.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.23.0"
   }
 }

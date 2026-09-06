@@ -57,15 +57,35 @@ export const LOCAL_CHAT_MODELS = [
       description: "Images, scanned documents, visual understanding, and multimodal questions",
     },
   },
+  {
+    id: "gemini-3.6-flash",
+    model_id: "gemini-3.6-flash",
+    name: "Gemini 3.6 Flash",
+    display_name: "Gemini 3.6 Flash",
+    description: "Fast multimodal AI model by Google",
+    type: "text",
+    provider: "gemini",
+    provider_display_name: "Google Gemini",
+    enabled: true,
+    is_default: false,
+    context_window: 1000000,
+    metadata: {
+      supports_tools: true,
+      description: "Fast and lightweight Gemini model",
+    },
+  },
 ];
 
 /**
- * Check whether a given model ID is an allowed local chat model.
+ * Check whether a given model ID is an allowed chat model.
  * @param {string} modelId
  * @returns {boolean}
  */
 export function isValidModelId(modelId) {
   if (!modelId || typeof modelId !== "string") return false;
+  if (modelId.startsWith("gemini-") || (process.env.LLM_PROVIDER || "").toLowerCase() === "gemini") {
+    return true;
+  }
   return LOCAL_CHAT_MODELS.some(
     (m) => m.id === modelId || m.model_id === modelId
   );
