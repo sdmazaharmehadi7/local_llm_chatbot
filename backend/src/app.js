@@ -17,6 +17,7 @@ import chatRoutes from "./routes/chat.routes.js";
 import chatsRoutes from "./routes/chats.routes.js";
 import modelsRoutes from "./routes/models.routes.js";
 import authRoutes from "./routes/auth.routes.js";
+import filesRoutes from "./routes/files.routes.js";
 import authMiddleware from "./middleware/auth.middleware.js";
 import { checkOllamaHealth } from "./services/ollama.service.js";
 
@@ -63,6 +64,9 @@ app.use("/api/models", modelsRoutes);
 
 // Legacy single-turn chat (kept for backend testing with curl)
 app.use("/api/chat", chatRoutes);
+
+// File upload & attachment management
+app.use("/api/files", filesRoutes);
 
 // AI SDK v6 streaming completion — consumed by useChatStream.js / @ai-sdk/react
 // POST /api/chats/:id/completion

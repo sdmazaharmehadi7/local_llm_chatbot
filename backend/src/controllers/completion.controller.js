@@ -22,10 +22,12 @@
  *   7. Updates Chat.updatedAt and auto-titles if necessary.
  */
 
+import fs from "fs";
 import crypto from "crypto";
 import mongoose from "mongoose";
 import Chat from "../models/Chat.js";
 import Message from "../models/Message.js";
+import File from "../models/File.js";
 import {
   streamChatFromOllama,
   getActiveModel,
@@ -43,13 +45,19 @@ function sseChunk(part) {
 
 /**
  * Convert internal messages to Ollama format.
- * Ollama expects: [{ role, content }]
+ * Ollama expects: [{ role, content, images?: string[] }]
  */
 function toOllamaMessages(messages) {
-  return messages.map(({ role, content }) => ({
-    role,
-    content: (content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(),
-  }));
+  return messages.map(({ role, content, images }) => {
+    const msg = {
+      role,
+      content: (content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(),
+    };
+    if (Array.isArray(images) && images.length > 0) {
+      msg.images = images;
+    }
+    return msg;
+  });
 }
 
 /**
@@ -384,7 +392,24 @@ export async function postCompletion(req, res) {
     });
   }
 
-  const targetModel = requestedModel || getActiveModel();
+  const incomingUserMsg = messages[messages.length - 1];
+  const attachedFileIds = (incomingUserMsg?.fileIds || []).filter(Boolean);
+
+  // Check if incoming message has image attachments
+  let hasImageAttachment = false;
+  if (attachedFileIds.length > 0) {
+    const attachedFiles = await File.find({ _id: { $in: attachedFileIds } }).lean();
+    hasImageAttachment = attachedFiles.some(
+      (f) => f.category === "image" || f.mimeType?.startsWith("image/")
+    );
+  }
+
+  // Automatically use qwen2.5vl:7b when an image is attached
+  let targetModel = requestedModel || getActiveModel();
+  if (hasImageAttachment) {
+    targetModel = "qwen2.5vl:7b";
+    console.log(`[CHAT] Image attachment detected. Automatically using model: ${targetModel}`);
+  }
 
   // 1. Verify / ensure chat document exists in MongoDB for this user
   let chat = await Chat.findOne({ _id: chatId, userId });
@@ -398,7 +423,6 @@ export async function postCompletion(req, res) {
   }
 
   // 2. Save incoming user message to MongoDB to ensure persistence
-  const incomingUserMsg = messages[messages.length - 1];
   if (incomingUserMsg && incomingUserMsg.role === "user") {
     const userMsgId = incomingUserMsg.id || new mongoose.Types.ObjectId().toString();
     await Message.findOneAndUpdate(
@@ -426,16 +450,51 @@ export async function postCompletion(req, res) {
 
   // 3. Load entire conversation history from MongoDB for this chatId ONLY
   const dbMessages = await Message.find({ chatId }).sort({ createdAt: 1 }).lean();
-  const conversationContext = dbMessages.map((m) => ({
-    role: m.role,
-    content: m.content || "",
-  }));
 
-  // Route to Gemini if cloud model requested
+  // Load any associated image files to provide base64 to multimodal models
+  const allFileIds = [...new Set(dbMessages.flatMap((m) => m.fileIds || []).filter(Boolean))];
+  const imageFilesMap = new Map();
+  if (allFileIds.length > 0) {
+    const fileDocs = await File.find({ _id: { $in: allFileIds } }).lean();
+    for (const f of fileDocs) {
+      if (f.category === "image" || f.mimeType?.startsWith("image/")) {
+        imageFilesMap.set(f._id.toString(), f);
+      }
+    }
+  }
+
+  const conversationContext = dbMessages.map((m) => {
+    const item = {
+      role: m.role,
+      content: m.content || "",
+    };
+
+    if (m.role === "user" && Array.isArray(m.fileIds) && m.fileIds.length > 0) {
+      const images = [];
+      for (const fId of m.fileIds) {
+        const fileDoc = imageFilesMap.get(fId.toString());
+        if (fileDoc && fileDoc.path && fs.existsSync(fileDoc.path)) {
+          try {
+            const base64Data = fs.readFileSync(fileDoc.path).toString("base64");
+            images.push(base64Data);
+          } catch (readErr) {
+            console.error(`[completion.controller] Failed to read image ${fId} from disk:`, readErr.message);
+          }
+        }
+      }
+      if (images.length > 0) {
+        item.images = images;
+      }
+    }
+
+    return item;
+  });
+
+  // Route to Gemini if cloud model requested (and no local image attached)
   if (isCloudModelId(targetModel)) {
     return streamGeminiCompletion(res, conversationContext, chatId, targetModel);
   }
 
-  // Otherwise route to Ollama
+  // Otherwise route to Ollama (uses targetModel: qwen2.5vl:7b for images)
   return streamOllamaCompletion(res, conversationContext, targetModel, chatId);
 }

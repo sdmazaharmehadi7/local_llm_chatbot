@@ -48,6 +48,7 @@ export function useChatStream({
   persistedMessagesRef.current = persistedMessages;
 
   const messageTimestampsRef = useRef(new Map());
+  const pendingFileIdsRef = useRef(new Map());
 
   const formattedMessages = (persistedMessages ?? []).map((msg) =>
     ensureTimestamp(msg, messageTimestampsRef)
@@ -66,7 +67,12 @@ export function useChatStream({
           }));
 
           const persistedIds = new Set(persistedForTransport.map((m) => m.id));
-          const newMessages = (outgoingMessages ?? []).filter((m) => !persistedIds.has(m.id));
+          const newMessages = (outgoingMessages ?? [])
+            .filter((m) => !persistedIds.has(m.id))
+            .map((m) => ({
+              ...m,
+              fileIds: m.fileIds || pendingFileIdsRef.current.get(m.id) || [],
+            }));
           const normalized = formatMessagesForTransport([...persistedForTransport, ...newMessages]);
 
           return {
@@ -144,7 +150,10 @@ export function useChatStream({
       parts: [{ type: "text", text: content }],
       createdAt: createdAt ?? Date.now(),
     };
-    if (fileIds.length > 0) message.fileIds = fileIds;
+    if (fileIds.length > 0) {
+      message.fileIds = fileIds;
+      pendingFileIdsRef.current.set(message.id, fileIds);
+    }
     messageTimestampsRef.current.set(message.id, message.createdAt);
     await sendMessage(message);
   }
