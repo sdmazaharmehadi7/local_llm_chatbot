@@ -1,10 +1,11 @@
 /**
  * Models Configuration — Single Source of Truth
  *
- * Defines the supported local Ollama models for Local Chat.
+ * Defines the supported local Ollama models and cloud models for Local Chat.
  * Excludes non-chat models (such as nomic-embed-text).
  */
 
+/** Local Ollama models */
 export const LOCAL_CHAT_MODELS = [
   {
     id: "qwen3:8b",
@@ -59,8 +60,40 @@ export const LOCAL_CHAT_MODELS = [
   },
 ];
 
+/** Cloud / API-based models */
+export const CLOUD_CHAT_MODELS = [
+  {
+    id: "gemini-3.6-flash",
+    model_id: "gemini-3.6-flash",
+    name: "Gemini 3.6 Flash",
+    display_name: "Gemini 3.6 Flash",
+    description: "Fast and capable Google model",
+    type: "text",
+    provider: "google",
+    provider_display_name: "Google",
+    enabled: true,
+    is_default: false,
+    context_window: 1048576,
+    metadata: {
+      supports_tools: false,
+      description: "Google Gemini 3.6 Flash — fast, smart, multimodal cloud model",
+      requires_api_key: "GEMINI_API_KEY",
+    },
+  },
+];
+
+/** All models combined — what gets returned by GET /api/models */
+export function getAllChatModels() {
+  const models = [...LOCAL_CHAT_MODELS];
+  // Only include Gemini if the API key is present
+  if (process.env.GEMINI_API_KEY) {
+    models.push(...CLOUD_CHAT_MODELS);
+  }
+  return models;
+}
+
 /**
- * Check whether a given model ID is an allowed local chat model.
+ * Check whether a given model ID is an allowed local Ollama model.
  * @param {string} modelId
  * @returns {boolean}
  */
@@ -72,13 +105,25 @@ export function isValidModelId(modelId) {
 }
 
 /**
- * Get configuration object for a given model ID.
+ * Check whether a given model ID is a known cloud (Gemini) model.
+ * @param {string} modelId
+ * @returns {boolean}
+ */
+export function isCloudModelId(modelId) {
+  if (!modelId || typeof modelId !== "string") return false;
+  return CLOUD_CHAT_MODELS.some(
+    (m) => m.id === modelId || m.model_id === modelId
+  );
+}
+
+/**
+ * Get configuration object for a given model ID (local or cloud).
  * @param {string} modelId
  * @returns {object|null}
  */
 export function getModelConfig(modelId) {
   return (
-    LOCAL_CHAT_MODELS.find(
+    [...LOCAL_CHAT_MODELS, ...CLOUD_CHAT_MODELS].find(
       (m) => m.id === modelId || m.model_id === modelId
     ) || null
   );
@@ -93,3 +138,4 @@ export function getDefaultModel() {
     LOCAL_CHAT_MODELS.find((m) => m.is_default) || LOCAL_CHAT_MODELS[0]
   );
 }
+

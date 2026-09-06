@@ -60,6 +60,19 @@ app.use("/api/chat", chatRoutes);
 // POST /api/chats/:id/completion
 app.use("/api/chats", chatsRoutes);
 
+// Auxiliary endpoints to prevent 404s in frontend
+app.get("/api/memory/status", (_req, res) => {
+  res.json({ success: true, enabled: false, globalEnabled: false });
+});
+
+app.get("/api/memory", (_req, res) => {
+  res.json({ success: true, memories: [] });
+});
+
+app.get("/api/folders", (_req, res) => {
+  res.json({ success: true, folders: [] });
+});
+
 // ─── 404 Fallback ─────────────────────────────────────────────────────────────
 
 app.use((_req, res) => {

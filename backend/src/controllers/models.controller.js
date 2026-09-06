@@ -10,14 +10,13 @@
  */
 
 import {
-  getAvailableModels,
   getLoadedModels,
   getActiveModel,
   setActiveModel,
   isSwitching,
   switchModel,
 } from "../services/ollama.service.js";
-import { isValidModelId } from "../constants/models.config.js";
+import { getAllChatModels, isValidModelId, isCloudModelId } from "../constants/models.config.js";
 
 /**
  * GET /api/models
@@ -26,7 +25,7 @@ import { isValidModelId } from "../constants/models.config.js";
  */
 export async function getModels(req, res) {
   try {
-    const allModels = getAvailableModels();
+    const allModels = getAllChatModels();
     const { type } = req.query;
     // Filter by type if specifically requested (both "text" and "chat" match local chat models)
     let models = allModels;
@@ -89,16 +88,18 @@ export async function selectModel(req, res) {
     });
   }
 
-  // Validate model against allowed local models list
-  if (!isValidModelId(model)) {
+  // Validate model against local or cloud model list
+  if (!isValidModelId(model) && !isCloudModelId(model)) {
     return res.status(400).json({
       success: false,
-      error: "Selected model is not available locally.",
+      error: "Selected model is not available.",
     });
   }
 
-  // Model selection is instant and lazy — does NOT trigger RAM load/switch
-  setActiveModel(model);
+  // Cloud models don't use the Ollama active model state
+  if (!isCloudModelId(model)) {
+    setActiveModel(model);
+  }
 
   return res.json({
     success: true,
