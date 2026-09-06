@@ -16,15 +16,31 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
     saveAssistantMessage,
   } = useChatPersistence(chatId);
 
+  const hasDocAttached = inputFiles.some(
+    (f) =>
+      f.category === "pdf" ||
+      f.category === "textLike" ||
+      f.mimeType === "application/pdf" ||
+      (f.filename && f.filename.toLowerCase().endsWith(".pdf"))
+  );
+  const hasImgAttached = inputFiles.some(
+    (f) => f.category === "image" || f.mimeType?.startsWith("image/")
+  );
+  const effectiveModel = hasDocAttached
+    ? "qwen3:8b"
+    : hasImgAttached
+      ? "qwen2.5vl:7b"
+      : model;
+
   const stream = useChatStream({
     chatId,
-    model,
+    model: effectiveModel,
     webSearchEnabled,
     memoryEnabled,
     persistedMessages,
     onMessageComplete: async ({ id, content, metadata, createdAt }) => {
       if (chatId) {
-        await saveAssistantMessage({ id, content, model, metadata, createdAt }, chatId);
+        await saveAssistantMessage({ id, content, model: effectiveModel, metadata, createdAt }, chatId);
       }
     },
   });
@@ -43,7 +59,7 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
     try {
       // Save user message immediately to local state/server
       saveUserMessage(
-        { id: messageId, content: trimmedContent, fileIds, createdAt, model },
+        { id: messageId, content: trimmedContent, fileIds, createdAt, model: effectiveModel },
         chatId
       ).catch((err) => console.error("Failed to save user message", err));
 

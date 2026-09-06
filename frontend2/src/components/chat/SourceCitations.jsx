@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Globe } from "lucide-react";
+import { Globe, FileText } from "lucide-react";
 
 export const TOOL_ERROR_MESSAGES = {
   RATE_LIMITED: "Search provider rate limited. Try again in a moment.",
@@ -16,6 +16,26 @@ export function extractSources(parts) {
   const sources = [];
   const seen = new Set();
   for (const part of parts) {
+    // Document RAG sources
+    if (
+      (part.type === "source" || part.type === "rag-source") &&
+      (part.isDocument || part.filename || part.source?.filename)
+    ) {
+      const filename = part.filename || part.source?.filename || "document";
+      const page = part.page || part.source?.page;
+      const key = `${filename}:::${page}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        sources.push({
+          title: page ? `${filename} — Page ${page}` : filename,
+          url: part.documentId ? `/api/files/${part.documentId}/content` : "#",
+          isDocument: true,
+          snippet: part.text || `Reference from ${filename}`,
+        });
+      }
+      continue;
+    }
+
     if (part.type !== "tool-invocation" || part.state !== "result") {
       continue;
     }
@@ -64,21 +84,25 @@ export default function SourceCitations({ sources }) {
       <div className="flex flex-wrap gap-2">
         {visibleSources.map((source) => (
           <a
-            key={source.url}
+            key={source.url + source.title}
             href={source.url}
             target="_blank"
             rel="noopener noreferrer"
             title={source.snippet}
             className="bg-theme-surface/60 border-theme-border/40 hover:bg-theme-surface hover:border-theme-border text-theme-text-muted hover:text-theme-text ease-snappy group inline-flex max-w-[200px] items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors duration-75">
-            <img
-              src={`https://www.google.com/s2/favicons?domain=${source.domain}&sz=16`}
-              alt=""
-              className="h-3.5 w-3.5 flex-shrink-0 rounded-sm"
-              loading="lazy"
-              onError={(e) => {
-                e.target.style.display = "none";
-              }}
-            />
+            {source.isDocument ? (
+              <FileText className="h-3.5 w-3.5 flex-shrink-0 text-theme-primary" />
+            ) : (
+              <img
+                src={`https://www.google.com/s2/favicons?domain=${source.domain}&sz=16`}
+                alt=""
+                className="h-3.5 w-3.5 flex-shrink-0 rounded-sm"
+                loading="lazy"
+                onError={(e) => {
+                  e.target.style.display = "none";
+                }}
+              />
+            )}
             <span className="truncate">{source.title}</span>
           </a>
         ))}

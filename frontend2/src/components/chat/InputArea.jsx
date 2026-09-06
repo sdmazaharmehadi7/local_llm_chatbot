@@ -30,6 +30,7 @@ const InputArea = ({
   const textareaRef = useRef(null);
   const { uploadFiles, uploading, currentFile } = useFileUploader({
     onFilesUploaded,
+    chatId,
   });
   const { dragActive, handleDrag, handleDrop } = useFileDragDrop((files) => uploadFiles(files));
   const imageMode = useUiState((state) => state.imageMode);

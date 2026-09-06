@@ -3,12 +3,21 @@ import { FILE_CONSTANTS, formatFileSize } from "@/shared";
 import { toast } from "sonner";
 import { API_BASE } from "@/lib/api";
 
-async function uploadFile(file) {
+async function uploadFile(file, chatId = null) {
   const formData = new FormData();
   formData.append("file", file);
+  if (chatId) {
+    formData.append("chatId", chatId);
+  }
+  const headers = {};
+  if (chatId) {
+    headers["X-Chat-Id"] = chatId;
+  }
+
   const response = await fetch(`${API_BASE}/api/files`, {
     method: "POST",
     credentials: "include",
+    headers,
     body: formData,
   });
   if (!response.ok) {
@@ -18,7 +27,7 @@ async function uploadFile(file) {
   return response.json();
 }
 
-export function useFileUploader({ onFilesUploaded } = {}) {
+export function useFileUploader({ onFilesUploaded, chatId = null } = {}) {
   const [uploading, setUploading] = useState(false);
   const [currentFile, setCurrentFile] = useState(null);
 
@@ -47,7 +56,9 @@ export function useFileUploader({ onFilesUploaded } = {}) {
     setUploading(true);
     setCurrentFile(uploadable.length === 1 ? uploadable[0].name : `${uploadable.length} files`);
 
-    const results = await Promise.allSettled(uploadable.map(uploadFile));
+    const results = await Promise.allSettled(
+      uploadable.map((file) => uploadFile(file, chatId))
+    );
     const uploaded = [];
     results.forEach((r, i) => {
       if (r.status === "fulfilled" && r.value) {

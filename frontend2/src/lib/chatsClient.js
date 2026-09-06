@@ -115,7 +115,7 @@ export const chatsClient = {
       id: id || `chat-${Date.now()}`,
       title: title || "New Chat",
       folderId: folderId || null,
-      selectedModel: selectedModel || "gemini-3.6-flash",
+      selectedModel: selectedModel || "qwen3:8b",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       pinnedAt: null,

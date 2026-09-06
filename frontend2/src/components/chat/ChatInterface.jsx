@@ -111,6 +111,24 @@ const ChatInterface = ({ chatId }) => {
     }
   }, [currentChat?.selectedModel]);
 
+  useEffect(() => {
+    const hasDoc = (inputFiles || []).some(
+      (f) =>
+        f.category === "pdf" ||
+        f.category === "textLike" ||
+        f.mimeType === "application/pdf" ||
+        (f.filename && f.filename.toLowerCase().endsWith(".pdf"))
+    );
+    const hasImg = (inputFiles || []).some(
+      (f) => f.category === "image" || f.mimeType?.startsWith("image/")
+    );
+    if (hasDoc && preferredModel !== "qwen3:8b") {
+      setPreferredModel("qwen3:8b");
+    } else if (hasImg && !hasDoc && preferredModel !== "qwen2.5vl:7b") {
+      setPreferredModel("qwen2.5vl:7b");
+    }
+  }, [inputFiles, preferredModel, setPreferredModel]);
+
   const { voice } = useChatVoice({
     messages,
     isLoading,
