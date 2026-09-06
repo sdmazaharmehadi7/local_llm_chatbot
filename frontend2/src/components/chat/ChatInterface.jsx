@@ -230,7 +230,6 @@ const ChatInterface = ({ chatId }) => {
               isLoading={isLoading}
               isGeneratingImage={isGenerating}
               status={status}
-              onStop={stop}
               onRegenerate={regenerate}
               activeModelName={currentModelData?.display_name}
             />
@@ -263,6 +262,7 @@ const ChatInterface = ({ chatId }) => {
               onRemoveFile={removeFile}
               isLoading={isLoading}
               isGenerating={isGenerating}
+              onStop={stop}
             />
           </div>
         </div>

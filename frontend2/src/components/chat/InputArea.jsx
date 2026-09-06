@@ -1,6 +1,6 @@
 import { useRef, useEffect } from "react";
 import { UI_CONSTANTS, ATTACHMENT_INPUT_ACCEPT, ATTACHMENT_TITLE_TEXT } from "@/shared";
-import { Paperclip, Image, Globe, Send, Mic, MicOff } from "lucide-react";
+import { Paperclip, Image, Globe, Send, Mic, MicOff, Square } from "lucide-react";
 import ChatMemoryButton from "./ChatMemoryButton";
 import { useFileUploader } from "@/hooks/useFileUploader";
 import { useFileDragDrop } from "@/hooks/useFileDragDrop";
@@ -26,6 +26,7 @@ const InputArea = ({
   isLoading,
   isGenerating,
   isSwitching = false,
+  onStop,
 }) => {
   const textareaRef = useRef(null);
   const { uploadFiles, uploading, currentFile } = useFileUploader({
@@ -265,19 +266,31 @@ const InputArea = ({
             )}
           </div>
 
-          {/* Send Button - Right */}
-          <button
-            onClick={handleFormSubmit}
-            disabled={isSubmitDisabled}
-            type="button"
-            aria-label="Send message"
-            className={`rounded-xl p-2 transition-all duration-200 ${
-              isSubmitDisabled
-                ? "bg-theme-surface-strong text-theme-muted cursor-not-allowed"
-                : "bg-theme-primary hover:bg-theme-accent text-white shadow-sm hover:scale-105 active:scale-95"
-            }`}>
-            <Send size={18} />
-          </button>
+          {/* Action Button - Right: Stop button while busy, Send button otherwise */}
+          {(isLoading || isGenerating) && onStop ? (
+            <button
+              onClick={onStop}
+              type="button"
+              aria-label="Stop generating"
+              title="Stop generating"
+              className="border-theme-red/40 bg-theme-red/15 text-theme-red hover:bg-theme-red hover:text-white rounded-xl border p-2 shadow-sm transition-all duration-200 hover:scale-105 active:scale-95">
+              <Square size={18} className="fill-current" />
+            </button>
+          ) : (
+            <button
+              onClick={handleFormSubmit}
+              disabled={isSubmitDisabled}
+              type="button"
+              aria-label="Send message"
+              title="Send message"
+              className={`rounded-xl p-2 transition-all duration-200 ${
+                isSubmitDisabled
+                  ? "bg-theme-surface-strong text-theme-muted cursor-not-allowed"
+                  : "bg-theme-primary hover:bg-theme-accent text-white shadow-sm hover:scale-105 active:scale-95"
+              }`}>
+              <Send size={18} />
+            </button>
+          )}
         </div>
       </div>
     </div>

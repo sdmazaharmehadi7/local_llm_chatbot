@@ -1,4 +1,5 @@
 import { Globe, Link2 } from "lucide-react";
+import RagThinkingIndicator from "./RagThinkingIndicator";
 
 const TOOL_STATUS = {
   webSearch: {
@@ -20,6 +21,26 @@ const TOOL_STATUS = {
 };
 
 export default function SearchStatus({ toolName, args }) {
+  if (toolName === "ragEmbedding") {
+    return (
+      <RagThinkingIndicator
+        stage="embedding"
+        filename={args?.filename}
+        message={args?.message}
+      />
+    );
+  }
+
+  if (toolName === "ragRetrieval") {
+    return (
+      <RagThinkingIndicator
+        stage="retrieval"
+        sourcesCount={args?.sourcesCount}
+        message={args?.message}
+      />
+    );
+  }
+
   const config = TOOL_STATUS[toolName];
   if (!config) {
     return null;

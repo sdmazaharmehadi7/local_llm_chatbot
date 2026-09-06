@@ -44,11 +44,14 @@ import {
   buildAugmentedMessages,
 } from "../services/rag.service.js";
 import { countPointsForChat } from "../services/qdrant.service.js";
+import { routeMessage } from "../services/ragRouter.service.js";
 
 /** Serialize one UI-message-stream chunk as an SSE data line. */
 function sseChunk(part) {
   return `data: ${JSON.stringify(part)}\n\n`;
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Convert internal messages to Ollama format.
@@ -165,7 +168,7 @@ async function streamGeminiCompletion(res, messages, chatId, targetModel, ragSou
             createdAt: new Date(),
           },
         },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: "after" }
       );
 
       await Chat.updateOne(
@@ -183,10 +186,25 @@ async function streamGeminiCompletion(res, messages, chatId, targetModel, ragSou
 /**
  * Stream chat through local Ollama model and persist response to MongoDB.
  */
-async function streamOllamaCompletion(res, messages, targetModel, chatId, ragSources = []) {
+async function streamOllamaCompletion(
+  res,
+  messages,
+  targetModel,
+  chatId,
+  ragSources = [],
+  options = {}
+) {
+  const { messageId = crypto.randomUUID(), sseStarted = false } = options;
+
   // Check Ollama reachability
   const reachable = await isOllamaReachable();
   if (!reachable) {
+    if (sseStarted) {
+      res.write(sseChunk({ type: "error", errorText: "Ollama is not running. Please start Ollama manually." }));
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
     return res.status(503).json({
       success: false,
       error: "Ollama is not running. Please start Ollama manually.",
@@ -195,6 +213,12 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId, ragSou
 
   // Validate model
   if (!isValidModelId(targetModel)) {
+    if (sseStarted) {
+      res.write(sseChunk({ type: "error", errorText: "Selected model is not available locally." }));
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
     return res.status(400).json({
       success: false,
       error: "Selected model is not available locally.",
@@ -207,6 +231,12 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId, ragSou
     (name) => name === targetModel || name.startsWith(targetModel.split(":")[0])
   );
   if (installedModels.length > 0 && !isInstalled) {
+    if (sseStarted) {
+      res.write(sseChunk({ type: "error", errorText: "Selected model is not available locally." }));
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
     return res.status(400).json({
       success: false,
       error: "Selected model is not available locally.",
@@ -222,19 +252,27 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId, ragSou
       err.message.includes("reach Ollama") ||
       err.message.includes("fetch failed") ||
       err.message.includes("not running");
+    const errMsg = isConnErr
+      ? "Ollama is not running. Please start Ollama manually."
+      : "Selected model is not available locally.";
+    if (sseStarted) {
+      res.write(sseChunk({ type: "error", errorText: errMsg }));
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
     return res.status(isConnErr ? 503 : 400).json({
       success: false,
-      error: isConnErr
-        ? "Ollama is not running. Please start Ollama manually."
-        : "Selected model is not available locally.",
+      error: errMsg,
     });
   }
 
-  beginSseStream(res);
+  if (!sseStarted) {
+    beginSseStream(res);
+    res.write(sseChunk({ type: "start", messageId }));
+    res.write(sseChunk({ type: "start-step" }));
+  }
 
-  const messageId = crypto.randomUUID();
-  res.write(sseChunk({ type: "start", messageId }));
-  res.write(sseChunk({ type: "start-step" }));
   res.write(sseChunk({ type: "text-start", id: "text-1" }));
 
   const ollamaMessages = toOllamaMessages(messages);
@@ -396,7 +434,7 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId, ragSou
             createdAt: new Date(),
           },
         },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: "after" }
       );
 
       await Chat.updateOne(
@@ -451,7 +489,7 @@ export async function postCompletion(req, res) {
       f.mimeType === "application/pdf"
   );
 
-  // Ensure any attached document files are linked to this chatId and indexed in Qdrant
+  // Ensure any attached document files are linked to this chatId
   if (attachedFiles.length > 0) {
     for (const f of attachedFiles) {
       let needsSave = false;
@@ -462,12 +500,6 @@ export async function postCompletion(req, res) {
       }
       if (needsSave) {
         await f.save().catch(() => {});
-      }
-      if (f.status !== "indexed" && isIndexableDocument(f.filename, f.mimeType)) {
-        console.log(`[completion.controller] Indexing attached document: ${f.filename}`);
-        await processAndIndexDocument(f).catch((e) => {
-          console.error(`[completion.controller] Indexing attached file ${f._id} error:`, e.message);
-        });
       }
     }
   }
@@ -488,19 +520,16 @@ export async function postCompletion(req, res) {
 
   const hasChatDocuments = hasIncomingDocument || existingChatDocsCount > 0 || qdrantPointCount > 0;
 
-  // 3. Determine target generation model
-  // STRICT RULE: Chat-scoped document RAG must use local Qwen3 8B. Never route to Gemini.
+  // 3. Determine base model
   let targetModel;
-  if (hasChatDocuments) {
-    targetModel = "qwen3:8b";
-    console.log(`[CHAT] Document RAG active for chat ${chatId}. Enforcing local model: ${targetModel}`);
-  } else if (hasIncomingImage) {
+  if (hasIncomingImage) {
     targetModel = "qwen2.5vl:7b";
     console.log(`[CHAT] Image attachment detected. Enforcing vision model: ${targetModel}`);
   } else {
-    targetModel = requestedModel && isValidModelId(requestedModel)
-      ? requestedModel
-      : (requestedModel || getActiveModel() || "qwen3:8b");
+    targetModel =
+      requestedModel && isValidModelId(requestedModel)
+        ? requestedModel
+        : requestedModel || getActiveModel() || "qwen3:8b";
   }
 
   // 4. Verify / ensure chat document exists in MongoDB for this user
@@ -512,10 +541,6 @@ export async function postCompletion(req, res) {
       title: "New Chat",
       selectedModel: targetModel,
     });
-  } else if (chat.selectedModel !== targetModel && (hasChatDocuments || hasIncomingImage)) {
-    // Keep chat record synchronized with the active local model
-    chat.selectedModel = targetModel;
-    await chat.save().catch(() => {});
   }
 
   // 5. Save incoming user message to MongoDB to ensure persistence
@@ -534,7 +559,7 @@ export async function postCompletion(req, res) {
           createdAt: incomingUserMsg.createdAt ? new Date(incomingUserMsg.createdAt) : new Date(),
         },
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: "after" }
     );
 
     // Auto-update chat title from first message if still "New Chat"
@@ -586,31 +611,187 @@ export async function postCompletion(req, res) {
     return item;
   });
 
-  // 7. Perform Chat-Scoped RAG Retrieval (strictly scoped to this chatId)
-  let ragResult = { hasContext: false, chunks: [], sources: [], contextText: "" };
-  if (hasChatDocuments) {
-    const queryText = incomingUserMsg?.content || "";
-    ragResult = await retrieveChatContext({
-      query: queryText.trim(),
-      chatId,
-      userId,
-      limit: 15,
-      scoreThreshold: 0.15,
+  // 7. RAG Router Decision
+  const userQuery = incomingUserMsg?.content || "";
+  const previousHistory = dbMessages.slice(0, -1);
+  const routeDecision = routeMessage({
+    message: userQuery,
+    conversationHistory: previousHistory,
+    hasChatDocuments,
+    attachedFiles,
+  });
+
+  console.log(
+    `[RAG_ROUTER] Chat ${chatId} decision: useRag=${routeDecision.useRag}, reason=${routeDecision.reason}`
+  );
+
+  // ── GENERAL QUESTION PATH ────────────────────────────────────────────────
+  // If useRag === false:
+  // - Bypasses nomic-embed-text completely (zero embedding calls).
+  // - Bypasses Qdrant completely (zero vector searches).
+  // - Does not emit any RAG status indicators.
+  // - Routes directly to Qwen3 (or Gemini if requested for a pure general chat).
+  if (!routeDecision.useRag) {
+    if (isCloudModelId(targetModel) && !hasChatDocuments && !hasIncomingImage) {
+      return streamGeminiCompletion(res, conversationContext, chatId, targetModel, []);
+    }
+
+    return streamOllamaCompletion(res, conversationContext, targetModel, chatId, []);
+  }
+
+  // ── DOCUMENT QUESTION PATH ───────────────────────────────────────────────
+  // If useRag === true:
+  // - Target model is strictly local Qwen3 8B.
+  // - Emits small status states: RAG_SEARCHING -> RAG_READING -> GENERATING.
+  // - Retrieves chunks via nomic-embed-text + Qdrant with chatId/scope isolation.
+  targetModel = "qwen3:8b";
+
+  // Check Ollama reachability upfront before starting stream
+  const reachable = await isOllamaReachable();
+  if (!reachable) {
+    return res.status(503).json({
+      success: false,
+      error: "Ollama is not running. Please start Ollama manually.",
     });
   }
 
-  let finalContext = conversationContext;
-  if (ragResult.hasContext) {
-    console.log(`[CHAT] RAG context retrieved: ${ragResult.sources.length} sources for chat ${chatId}`);
-    finalContext = buildAugmentedMessages(conversationContext, ragResult.contextText, ragResult.sources);
+  // Begin SSE stream
+  beginSseStream(res);
+  const messageId = crypto.randomUUID();
+  res.write(sseChunk({ type: "start", messageId }));
+  res.write(sseChunk({ type: "start-step" }));
+
+  // Status Indicator 1: "Searching PDF for context..."
+  res.write(
+    sseChunk({
+      type: "data-rag-status",
+      id: "rag-status",
+      data: { state: "RAG_SEARCHING", text: "Searching PDF for context..." },
+    })
+  );
+
+  // Small delay so the user can visibly see the searching status pill
+  await sleep(400);
+
+  // Index newly attached documents if needed
+  if (attachedFiles.length > 0) {
+    for (const f of attachedFiles) {
+      if (f.status !== "indexed" && isIndexableDocument(f.filename, f.mimeType)) {
+        console.log(`[completion.controller] Indexing attached document: ${f.filename}`);
+        await processAndIndexDocument(f).catch((e) => {
+          console.error(`[completion.controller] Indexing attached file ${f._id} error:`, e.message);
+        });
+      }
+    }
   }
 
-  // 8. Route to LLM:
-  // Gemini is allowed ONLY if requested for a normal chat (NO documents, NO images).
-  if (isCloudModelId(targetModel) && !hasChatDocuments && !hasIncomingImage) {
-    return streamGeminiCompletion(res, finalContext, chatId, targetModel, ragResult.sources);
+  // Status Indicator 2: "Reading relevant sections from PDF..."
+  res.write(
+    sseChunk({
+      type: "data-rag-status",
+      id: "rag-status",
+      data: { state: "RAG_READING", text: "Reading relevant sections from PDF..." },
+    })
+  );
+
+  // Retrieve relevant chunks with strict chat-scoped isolation
+  const ragResult = await retrieveChatContext({
+    query: userQuery.trim(),
+    chatId,
+    userId,
+    limit: 15,
+    scoreThreshold: 0.35,
+  });
+
+  // Small delay so the reading phase is clearly visible to the user
+  await sleep(400);
+
+  // If Qdrant is unavailable: return concise document retrieval error without crashing
+  if (ragResult.qdrantUnavailable) {
+    const errMsg = "Document retrieval is currently unavailable because the vector database is offline. Please ensure Qdrant is running.";
+    res.write(sseChunk({ type: "data-rag-status", id: "rag-status", data: { state: "GENERATING" } }));
+    res.write(sseChunk({ type: "text-start", id: "text-1" }));
+    res.write(sseChunk({ type: "text-delta", id: "text-1", delta: errMsg }));
+    res.write(sseChunk({ type: "text-end", id: "text-1" }));
+    res.write(sseChunk({ type: "finish-step" }));
+    res.write(sseChunk({ type: "finish", finishReason: "stop" }));
+    res.write("data: [DONE]\n\n");
+    res.end();
+
+    await Message.findOneAndUpdate(
+      { _id: messageId, chatId },
+      {
+        $set: {
+          chatId,
+          role: "assistant",
+          content: errMsg,
+          parts: [{ type: "text", text: errMsg }],
+          model: targetModel,
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true, returnDocument: "after" }
+    ).catch(() => {});
+    return;
   }
 
-  // Otherwise route to local Ollama (Qwen3 8B for RAG / general chat, Qwen2.5-VL for images)
-  return streamOllamaCompletion(res, finalContext, targetModel, chatId, ragResult.sources);
+  // If no sufficiently relevant chunks found: fall back to normal Qwen generation without document context
+  if (ragResult.noRelevantChunks || !ragResult.hasContext) {
+    console.log(
+      `[completion.controller] No relevant document chunks found for query in chat ${chatId}. Falling back to normal Qwen completion.`
+    );
+    res.write(
+      sseChunk({
+        type: "data-rag-status",
+        id: "rag-status",
+        data: { state: "GENERATING" },
+      })
+    );
+
+    return streamOllamaCompletion(
+      res,
+      conversationContext,
+      targetModel,
+      chatId,
+      [],
+      { messageId, sseStarted: true }
+    );
+  }
+
+  // Transition RAG indicator to GENERATING
+  res.write(
+    sseChunk({
+      type: "data-rag-status",
+      id: "rag-status",
+      data: { state: "GENERATING" },
+    })
+  );
+
+  // Emit live sources event over SSE so frontend receives them immediately
+  if (ragResult.sources?.length > 0) {
+    res.write(
+      sseChunk({
+        type: "data-rag-sources",
+        id: "rag-sources",
+        data: { sources: ragResult.sources },
+      })
+    );
+  }
+
+  // Augment conversation context with retrieved document sections and sources
+  const finalContext = buildAugmentedMessages(
+    conversationContext,
+    ragResult.contextText,
+    ragResult.sources
+  );
+
+  // Stream Ollama completion
+  return streamOllamaCompletion(
+    res,
+    finalContext,
+    targetModel,
+    chatId,
+    ragResult.sources,
+    { messageId, sseStarted: true }
+  );
 }

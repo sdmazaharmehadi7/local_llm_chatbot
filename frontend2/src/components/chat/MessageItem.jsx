@@ -6,6 +6,7 @@ import MessageAttachment from "./MessageAttachment";
 import ModelAvatar from "./ModelAvatar";
 import SearchStatus from "./SearchStatus";
 import SourceCitations, { extractSources, TOOL_ERROR_MESSAGES } from "./SourceCitations";
+import RagStatusIndicator from "./RagStatusIndicator";
 
 /**
  * Parse <think> blocks from content for reasoning models (DeepSeek R1, o1, etc.)
@@ -40,13 +41,14 @@ const parseThinkingBlocks = (text) => {
   return { thinking, content };
 };
 
-const MessageItem = memo(({ message, onStop, onRegenerate }) => {
+const MessageItem = memo(({ message, onStop, onRegenerate, isStreaming = false }) => {
   const isUser = message.role === "user";
   const rawContent = extractTextContent(message);
   const { thinking, content } = isUser
     ? { thinking: [], content: rawContent }
     : parseThinkingBlocks(rawContent);
-  const isStreaming = message.experimental_status === "streaming";
+  const isMessageStreaming =
+    isStreaming || message.status === "streaming" || message.experimental_status === "streaming";
   const showActions = !isUser && (onStop || onRegenerate);
   const hasAttachments = message.fileIds && message.fileIds.length > 0;
   const modelName = message.model;
@@ -54,12 +56,20 @@ const MessageItem = memo(({ message, onStop, onRegenerate }) => {
   const activeToolCall = message.parts?.find(
     (p) => p.type === "tool-invocation" && p.state === "call"
   );
-  const sources = isUser ? [] : extractSources(message.parts);
+  const sources = isUser ? [] : extractSources(message.parts, message.metadata);
   const toolErrors = isUser
     ? []
     : message.parts?.filter(
         (p) => p.type === "tool-invocation" && p.state === "result" && p.result?.error
       ) || [];
+
+  // Backend RAG state from UI message stream (RAG_SEARCHING, RAG_READING, GENERATING, GENERAL)
+  const ragStatusPart = message.parts?.find((p) => p.type === "data-rag-status");
+  const ragStatus = ragStatusPart?.data;
+  const isRagSearchingOrReading =
+    !hasThinking &&
+    content.length === 0 &&
+    (ragStatus?.state === "RAG_SEARCHING" || ragStatus?.state === "RAG_READING");
 
   return (
     <div className={`mb-8 flex w-full ${isUser ? "justify-end" : "justify-start"}`}>
@@ -88,12 +98,21 @@ const MessageItem = memo(({ message, onStop, onRegenerate }) => {
             </div>
           )}
 
+          {/* Small ChatGPT-style RAG status indicator while searching or reading document */}
+          {isRagSearchingOrReading && (
+            <RagStatusIndicator
+              state={ragStatus?.state}
+              text={ragStatus?.text}
+            />
+          )}
+
           {hasThinking && (
             <div className="mb-4">
               {thinking.map((thinkContent, index) => (
                 <details
                   key={index}
-                  className="bg-theme-surface/50 border-theme-border/50 group rounded-lg border">
+                  open={isMessageStreaming}
+                  className="bg-theme-surface/50 border-theme-border/50 group rounded-lg border transition-all duration-200">
                   <summary className="text-theme-text-muted hover:text-theme-text flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-medium transition-colors select-none">
                     <Brain className="text-theme-mauve h-4 w-4 flex-shrink-0" />
                     <span>Reasoning</span>
@@ -148,7 +167,7 @@ const MessageItem = memo(({ message, onStop, onRegenerate }) => {
             </div>
           )}
 
-          {isStreaming && !activeToolCall && (
+          {isMessageStreaming && !isRagSearchingOrReading && !activeToolCall && (
             <div className="text-theme-mauve mt-3 flex transform-gpu animate-pulse items-center gap-2">
               <Sparkles className="h-4 w-4" />
               <span className="text-xs font-medium">Processing...</span>

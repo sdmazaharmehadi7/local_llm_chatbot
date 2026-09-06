@@ -9,13 +9,51 @@ export const TOOL_ERROR_MESSAGES = {
   SSRF_BLOCKED: "URL blocked for security reasons.",
 };
 
-export function extractSources(parts) {
-  if (!parts) {
-    return [];
-  }
+export function extractSources(parts, metadata = null) {
   const sources = [];
   const seen = new Set();
+
+  if (Array.isArray(metadata?.ragSources)) {
+    for (const s of metadata.ragSources) {
+      const filename = s.filename || "document";
+      const page = s.page;
+      const key = `${filename}:::${page}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        sources.push({
+          title: page ? `${filename} — Page ${page}` : filename,
+          url: s.documentId ? `/api/files/${s.documentId}/content` : "#",
+          isDocument: true,
+          snippet: `Reference from ${filename}`,
+        });
+      }
+    }
+  }
+
+  if (!parts) {
+    return sources;
+  }
+
   for (const part of parts) {
+    // Document RAG sources from data-rag-sources event
+    if (part.type === "data-rag-sources" && Array.isArray(part.data?.sources)) {
+      for (const s of part.data.sources) {
+        const filename = s.filename || "document";
+        const page = s.page;
+        const key = `${filename}:::${page}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          sources.push({
+            title: page ? `${filename} — Page ${page}` : filename,
+            url: s.documentId ? `/api/files/${s.documentId}/content` : "#",
+            isDocument: true,
+            snippet: `Reference from ${filename}`,
+          });
+        }
+      }
+      continue;
+    }
+
     // Document RAG sources
     if (
       (part.type === "source" || part.type === "rag-source") &&

@@ -164,3 +164,106 @@
     line-height: 1.7;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * RAG Shimmer Effect & Skeleton Wave Animations
+ * ────────────────────────────────────────────────────────────────────────── */
+
+@keyframes rag-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+@keyframes rag-wave-bar {
+  0%, 100% {
+    transform: scaleY(0.4);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+@keyframes rag-glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 10px -2px rgba(99, 102, 241, 0.2), 0 0 20px -4px rgba(45, 212, 191, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 18px 2px rgba(99, 102, 241, 0.4), 0 0 28px 4px rgba(45, 212, 191, 0.3);
+  }
+}
+
+/* Container that sweeps a light shimmer wave across its children */
+.rag-shimmer-container {
+  position: relative;
+  overflow: hidden;
+}
+
+.rag-shimmer-container::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.04) 20%,
+    rgba(129, 140, 248, 0.18) 50%,
+    rgba(45, 212, 191, 0.14) 70%,
+    transparent 100%
+  );
+  animation: rag-shimmer 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+
+/* Individual skeleton line with built-in shimmering wave */
+.rag-skeleton-line {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--theme-surface-strong, #27272a);
+  border-radius: 9999px;
+}
+
+.rag-skeleton-line::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 15%,
+    rgba(129, 140, 248, 0.28) 50%,
+    rgba(45, 212, 191, 0.22) 75%,
+    transparent 100%
+  );
+  animation: rag-shimmer 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+
+/* Animated rhythmic wave bars */
+.rag-wave-bar {
+  transform-origin: bottom;
+  animation: rag-wave-bar 1.2s ease-in-out infinite;
+}
+
+.rag-wave-bar-1 { animation-delay: 0ms; }
+.rag-wave-bar-2 { animation-delay: 150ms; }
+.rag-wave-bar-3 { animation-delay: 300ms; }
+.rag-wave-bar-4 { animation-delay: 450ms; }
+
+.rag-glow {
+  animation: rag-glow-pulse 3s ease-in-out infinite;
+}
+

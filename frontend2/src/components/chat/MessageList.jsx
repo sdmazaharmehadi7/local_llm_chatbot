@@ -88,10 +88,11 @@ const MessageList = ({
             message={message}
             onStop={actions.stop}
             onRegenerate={actions.regenerate}
+            isStreaming={isActiveAssistant && (status === "streaming" || status === "submitted")}
           />
         );
       })}
-      {isLoading && (
+      {isLoading && (!lastAssistantId || sortedMessages[sortedMessages.length - 1]?.role === "user") && (
         <div className="flex items-center gap-2.5 py-2 px-1 text-sm text-theme-text-muted animate-pulse">
           <span className="relative flex h-2.5 w-2.5">
             <span className="bg-theme-primary absolute inline-flex h-full w-full transform-gpu animate-ping rounded-full opacity-75"></span>

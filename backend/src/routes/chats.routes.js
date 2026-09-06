@@ -120,7 +120,7 @@ router.patch("/:id", async (req, res) => {
     const chat = await Chat.findOneAndUpdate(
       { _id: id, userId },
       { $set: updates },
-      { new: true, upsert: true }
+      { returnDocument: "after", upsert: true }
     );
 
     res.json({ success: true, chat, ...chat.toJSON() });
@@ -188,7 +188,7 @@ router.post("/:id/messages", async (req, res) => {
           createdAt: messageCreatedAt,
         },
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: "after" }
     );
 
     // Update parent chat's updatedAt and title if first user message
@@ -235,7 +235,7 @@ router.post("/:id/pin", async (req, res) => {
     const chat = await Chat.findOneAndUpdate(
       { _id: id, userId },
       { $set: { pinnedAt: new Date() } },
-      { new: true }
+      { returnDocument: "after" }
     );
     res.json({ success: true, chat });
   } catch (err) {
@@ -251,7 +251,7 @@ router.delete("/:id/pin", async (req, res) => {
     const chat = await Chat.findOneAndUpdate(
       { _id: id, userId },
       { $set: { pinnedAt: null } },
-      { new: true }
+      { returnDocument: "after" }
     );
     res.json({ success: true, chat });
   } catch (err) {
@@ -267,7 +267,7 @@ router.post("/:id/archive", async (req, res) => {
     const chat = await Chat.findOneAndUpdate(
       { _id: id, userId },
       { $set: { archivedAt: new Date() } },
-      { new: true }
+      { returnDocument: "after" }
     );
     res.json({ success: true, chat });
   } catch (err) {
@@ -283,7 +283,7 @@ router.delete("/:id/archive", async (req, res) => {
     const chat = await Chat.findOneAndUpdate(
       { _id: id, userId },
       { $set: { archivedAt: null } },
-      { new: true }
+      { returnDocument: "after" }
     );
     res.json({ success: true, chat });
   } catch (err) {

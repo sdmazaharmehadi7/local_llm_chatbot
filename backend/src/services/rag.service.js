@@ -351,15 +351,18 @@ export async function retrieveChatContext({
     // Detect summary / overview intent
     const isSummaryQuery =
       !cleanQuery ||
-      /\b(summar(y|ize)|overview|brief|about|what does this|explain this|review|outline|content|key points|gist|takeaway|analyze|analysis)\b/i.test(
+      /^(summar(y|ize)|give (me )?(a )?summary|overview|what is this (doc|document|pdf) about|what does this (doc|document|pdf) (say|contain)|brief overview|key takeaways|key points)\b/i.test(
+        cleanQuery
+      ) ||
+      /\b(summarize (the|this|it)|summary of (the|this|it)|briefly summarize)\b/i.test(
         cleanQuery
       );
 
     let selectedChunks = [];
 
-    // Document is small (<= 25 chunks, up to ~10 pages) OR user wants a summary:
+    // ONLY for explicit summary / overview requests:
     // Supply chunks in chronological page order for complete and accurate context.
-    if (allChatPoints.length <= 25 || isSummaryQuery) {
+    if (isSummaryQuery) {
       const sorted = [...allChatPoints].sort((a, b) => {
         const pageA = a.payload?.page || a.payload?.pageNumber || 1;
         const pageB = b.payload?.page || b.payload?.pageNumber || 1;
@@ -380,27 +383,34 @@ export async function retrieveChatContext({
         selectedChunks = Array.from(combinedMap.values());
       }
     } else {
-      // Specific user query on a larger document: use vector similarity search
+      // Specific user query: MUST use vector similarity search with score threshold
       const queryVector = await generateEmbedding(cleanQuery);
+      const effectiveThreshold = Math.max(Number(scoreThreshold) || 0, 0.35);
       const matches = await searchChatPoints({
         vector: queryVector,
         chatId: String(chatId),
         userId: userId ? String(userId) : null,
         scope: "chat",
         limit,
-        scoreThreshold,
+        scoreThreshold: effectiveThreshold,
       });
 
       if (matches.length > 0) {
         selectedChunks = matches.map((m) => m.payload).filter(Boolean);
       } else {
-        // Fallback: take initial document chunks so model is grounded
-        selectedChunks = allChatPoints.slice(0, 8).map((p) => p.payload).filter(Boolean);
+        // No sufficiently relevant chunks found - do not fabricate or fallback to unrelated chunks
+        return {
+          hasContext: false,
+          noRelevantChunks: true,
+          chunks: [],
+          sources: [],
+          contextText: "",
+        };
       }
     }
 
     if (selectedChunks.length === 0) {
-      return { hasContext: false, chunks: [], sources: [], contextText: "" };
+      return { hasContext: false, noRelevantChunks: true, chunks: [], sources: [], contextText: "" };
     }
 
     // Deduplicate chunks and sort chronologically by page and chunkIndex
@@ -452,8 +462,15 @@ export async function retrieveChatContext({
       contextText,
     };
   } catch (err) {
-    console.warn(`[rag.service] Retrieval notice for chat ${chatId}:`, err.message);
-    return { hasContext: false, chunks: [], sources: [], contextText: "" };
+    console.error(`[rag.service] Retrieval error for chat ${chatId}:`, err.message);
+    return {
+      hasContext: false,
+      qdrantUnavailable: true,
+      error: "Document retrieval service is currently unavailable. Please check the vector database.",
+      chunks: [],
+      sources: [],
+      contextText: "",
+    };
   }
 }
 
