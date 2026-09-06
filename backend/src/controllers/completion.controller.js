@@ -37,6 +37,13 @@ import {
 } from "../services/ollama.service.js";
 import { streamChatFromGemini } from "../services/gemini.service.js";
 import { isValidModelId, isCloudModelId } from "../constants/models.config.js";
+import {
+  isIndexableDocument,
+  processAndIndexDocument,
+  retrieveChatContext,
+  buildAugmentedMessages,
+} from "../services/rag.service.js";
+import { countPointsForChat } from "../services/qdrant.service.js";
 
 /** Serialize one UI-message-stream chunk as an SSE data line. */
 function sseChunk(part) {
@@ -77,7 +84,7 @@ function beginSseStream(res) {
 /**
  * Stream chat through Gemini 3.6 Flash and persist response to MongoDB.
  */
-async function streamGeminiCompletion(res, messages, chatId, targetModel) {
+async function streamGeminiCompletion(res, messages, chatId, targetModel, ragSources = []) {
   if (!process.env.GEMINI_API_KEY) {
     return res.status(503).json({
       success: false,
@@ -132,6 +139,19 @@ async function streamGeminiCompletion(res, messages, chatId, targetModel) {
   // Persist ONE complete assistant message in MongoDB
   if (!aborted && fullResponseText.trim()) {
     try {
+      const parts = [{ type: "text", text: fullResponseText }];
+      if (Array.isArray(ragSources) && ragSources.length > 0) {
+        for (const s of ragSources) {
+          parts.push({
+            type: "source",
+            isDocument: true,
+            filename: s.filename,
+            page: s.page,
+            documentId: s.documentId,
+          });
+        }
+      }
+
       await Message.findOneAndUpdate(
         { _id: messageId, chatId },
         {
@@ -139,8 +159,9 @@ async function streamGeminiCompletion(res, messages, chatId, targetModel) {
             chatId,
             role: "assistant",
             content: fullResponseText,
-            parts: [{ type: "text", text: fullResponseText }],
+            parts,
             model: targetModel,
+            metadata: ragSources?.length > 0 ? { ragSources } : null,
             createdAt: new Date(),
           },
         },
@@ -162,7 +183,7 @@ async function streamGeminiCompletion(res, messages, chatId, targetModel) {
 /**
  * Stream chat through local Ollama model and persist response to MongoDB.
  */
-async function streamOllamaCompletion(res, messages, targetModel, chatId) {
+async function streamOllamaCompletion(res, messages, targetModel, chatId, ragSources = []) {
   // Check Ollama reachability
   const reachable = await isOllamaReachable();
   if (!reachable) {
@@ -349,6 +370,19 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
   // Persist ONE complete assistant message in MongoDB
   if (!aborted && fullResponseText.trim()) {
     try {
+      const parts = [{ type: "text", text: fullResponseText }];
+      if (Array.isArray(ragSources) && ragSources.length > 0) {
+        for (const s of ragSources) {
+          parts.push({
+            type: "source",
+            isDocument: true,
+            filename: s.filename,
+            page: s.page,
+            documentId: s.documentId,
+          });
+        }
+      }
+
       await Message.findOneAndUpdate(
         { _id: messageId, chatId },
         {
@@ -356,8 +390,9 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
             chatId,
             role: "assistant",
             content: fullResponseText,
-            parts: [{ type: "text", text: fullResponseText }],
+            parts,
             model: targetModel,
+            metadata: ragSources?.length > 0 ? { ragSources } : null,
             createdAt: new Date(),
           },
         },
@@ -395,23 +430,80 @@ export async function postCompletion(req, res) {
   const incomingUserMsg = messages[messages.length - 1];
   const attachedFileIds = (incomingUserMsg?.fileIds || []).filter(Boolean);
 
-  // Check if incoming message has image attachments
-  let hasImageAttachment = false;
+  // 1. Inspect incoming attached files
+  let attachedFiles = [];
   if (attachedFileIds.length > 0) {
-    const attachedFiles = await File.find({ _id: { $in: attachedFileIds } }).lean();
-    hasImageAttachment = attachedFiles.some(
-      (f) => f.category === "image" || f.mimeType?.startsWith("image/")
-    );
+    try {
+      attachedFiles = await File.find({ _id: { $in: attachedFileIds } });
+    } catch (e) {
+      console.warn("[completion.controller] Failed to fetch attached files:", e.message);
+    }
   }
 
-  // Automatically use qwen2.5vl:7b when an image is attached
-  let targetModel = requestedModel || getActiveModel();
-  if (hasImageAttachment) {
+  const hasIncomingImage = attachedFiles.some(
+    (f) => f.category === "image" || f.mimeType?.startsWith("image/")
+  );
+  const hasIncomingDocument = attachedFiles.some(
+    (f) =>
+      isIndexableDocument(f.filename, f.mimeType) ||
+      f.category === "pdf" ||
+      f.category === "textLike" ||
+      f.mimeType === "application/pdf"
+  );
+
+  // Ensure any attached document files are linked to this chatId and indexed in Qdrant
+  if (attachedFiles.length > 0) {
+    for (const f of attachedFiles) {
+      let needsSave = false;
+      if (!f.chatId || f.chatId !== chatId) {
+        f.chatId = chatId;
+        f.scope = "chat";
+        needsSave = true;
+      }
+      if (needsSave) {
+        await f.save().catch(() => {});
+      }
+      if (f.status !== "indexed" && isIndexableDocument(f.filename, f.mimeType)) {
+        console.log(`[completion.controller] Indexing attached document: ${f.filename}`);
+        await processAndIndexDocument(f).catch((e) => {
+          console.error(`[completion.controller] Indexing attached file ${f._id} error:`, e.message);
+        });
+      }
+    }
+  }
+
+  // 2. Check if current chat has any uploaded or indexed documents
+  let existingChatDocsCount = 0;
+  let qdrantPointCount = 0;
+  try {
+    existingChatDocsCount = await File.countDocuments({
+      chatId,
+      scope: "chat",
+      category: { $ne: "image" },
+    });
+    qdrantPointCount = await countPointsForChat(chatId);
+  } catch (e) {
+    console.warn("[completion.controller] Error checking chat document count:", e.message);
+  }
+
+  const hasChatDocuments = hasIncomingDocument || existingChatDocsCount > 0 || qdrantPointCount > 0;
+
+  // 3. Determine target generation model
+  // STRICT RULE: Chat-scoped document RAG must use local Qwen3 8B. Never route to Gemini.
+  let targetModel;
+  if (hasChatDocuments) {
+    targetModel = "qwen3:8b";
+    console.log(`[CHAT] Document RAG active for chat ${chatId}. Enforcing local model: ${targetModel}`);
+  } else if (hasIncomingImage) {
     targetModel = "qwen2.5vl:7b";
-    console.log(`[CHAT] Image attachment detected. Automatically using model: ${targetModel}`);
+    console.log(`[CHAT] Image attachment detected. Enforcing vision model: ${targetModel}`);
+  } else {
+    targetModel = requestedModel && isValidModelId(requestedModel)
+      ? requestedModel
+      : (requestedModel || getActiveModel() || "qwen3:8b");
   }
 
-  // 1. Verify / ensure chat document exists in MongoDB for this user
+  // 4. Verify / ensure chat document exists in MongoDB for this user
   let chat = await Chat.findOne({ _id: chatId, userId });
   if (!chat) {
     chat = await Chat.create({
@@ -420,9 +512,13 @@ export async function postCompletion(req, res) {
       title: "New Chat",
       selectedModel: targetModel,
     });
+  } else if (chat.selectedModel !== targetModel && (hasChatDocuments || hasIncomingImage)) {
+    // Keep chat record synchronized with the active local model
+    chat.selectedModel = targetModel;
+    await chat.save().catch(() => {});
   }
 
-  // 2. Save incoming user message to MongoDB to ensure persistence
+  // 5. Save incoming user message to MongoDB to ensure persistence
   if (incomingUserMsg && incomingUserMsg.role === "user") {
     const userMsgId = incomingUserMsg.id || new mongoose.Types.ObjectId().toString();
     await Message.findOneAndUpdate(
@@ -444,11 +540,11 @@ export async function postCompletion(req, res) {
     // Auto-update chat title from first message if still "New Chat"
     if (chat.title === "New Chat" && incomingUserMsg.content && incomingUserMsg.content.trim()) {
       chat.title = incomingUserMsg.content.trim().slice(0, 30);
-      await chat.save();
+      await chat.save().catch(() => {});
     }
   }
 
-  // 3. Load entire conversation history from MongoDB for this chatId ONLY
+  // 6. Load conversation history from MongoDB for this chatId ONLY
   const dbMessages = await Message.find({ chatId }).sort({ createdAt: 1 }).lean();
 
   // Load any associated image files to provide base64 to multimodal models
@@ -490,11 +586,31 @@ export async function postCompletion(req, res) {
     return item;
   });
 
-  // Route to Gemini if cloud model requested (and no local image attached)
-  if (isCloudModelId(targetModel)) {
-    return streamGeminiCompletion(res, conversationContext, chatId, targetModel);
+  // 7. Perform Chat-Scoped RAG Retrieval (strictly scoped to this chatId)
+  let ragResult = { hasContext: false, chunks: [], sources: [], contextText: "" };
+  if (hasChatDocuments) {
+    const queryText = incomingUserMsg?.content || "";
+    ragResult = await retrieveChatContext({
+      query: queryText.trim(),
+      chatId,
+      userId,
+      limit: 15,
+      scoreThreshold: 0.15,
+    });
   }
 
-  // Otherwise route to Ollama (uses targetModel: qwen2.5vl:7b for images)
-  return streamOllamaCompletion(res, conversationContext, targetModel, chatId);
+  let finalContext = conversationContext;
+  if (ragResult.hasContext) {
+    console.log(`[CHAT] RAG context retrieved: ${ragResult.sources.length} sources for chat ${chatId}`);
+    finalContext = buildAugmentedMessages(conversationContext, ragResult.contextText, ragResult.sources);
+  }
+
+  // 8. Route to LLM:
+  // Gemini is allowed ONLY if requested for a normal chat (NO documents, NO images).
+  if (isCloudModelId(targetModel) && !hasChatDocuments && !hasIncomingImage) {
+    return streamGeminiCompletion(res, finalContext, chatId, targetModel, ragResult.sources);
+  }
+
+  // Otherwise route to local Ollama (Qwen3 8B for RAG / general chat, Qwen2.5-VL for images)
+  return streamOllamaCompletion(res, finalContext, targetModel, chatId, ragResult.sources);
 }

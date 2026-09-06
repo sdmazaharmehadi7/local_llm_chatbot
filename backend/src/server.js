@@ -12,12 +12,18 @@
 import "dotenv/config";
 import app from "./app.js";
 import { connectDB } from "./db.js";
+import { ensureCollection } from "./services/qdrant.service.js";
 import mongoose from "mongoose";
 
 const PORT = process.env.PORT || 5000;
 
 // Connect to MongoDB
 await connectDB();
+
+// Initialize Qdrant RAG collection (non-blocking)
+ensureCollection().catch((err) => {
+  console.warn("[server] Qdrant initialization notice:", err.message);
+});
 
 const server = app.listen(PORT, () => {
   console.log("─────────────────────────────────────────────");
@@ -27,6 +33,7 @@ const server = app.listen(PORT, () => {
   console.log(`  Chat    : POST http://localhost:${PORT}/api/chat`);
   console.log(`  Ollama  : ${process.env.OLLAMA_BASE_URL || "http://localhost:11434"}`);
   console.log(`  Model   : ${process.env.OLLAMA_MODEL || "qwen3:8b"}`);
+  console.log(`  Qdrant  : ${process.env.QDRANT_URL || "http://localhost:6333"}`);
   console.log("─────────────────────────────────────────────");
 });
 

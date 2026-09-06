@@ -23,6 +23,8 @@ import { Router } from "express";
 import mongoose from "mongoose";
 import Chat from "../models/Chat.js";
 import Message from "../models/Message.js";
+import File from "../models/File.js";
+import { deletePointsByChatId } from "../services/qdrant.service.js";
 import { postCompletion } from "../controllers/completion.controller.js";
 
 const router = Router();
@@ -54,7 +56,7 @@ router.post("/", async (req, res) => {
       _id: chatId,
       userId,
       title: title || "New Chat",
-      selectedModel: selectedModel || "gemini-3.6-flash",
+      selectedModel: selectedModel || "qwen3:8b",
       folderId: folderId || folder_id || null,
       pinnedAt: null,
       archivedAt: null,
@@ -80,8 +82,15 @@ router.get("/:id", async (req, res) => {
         _id: id,
         userId,
         title: "New Chat",
-        selectedModel: "gemini-3.6-flash",
+        selectedModel: "qwen3:8b",
       });
+    } else {
+      // If chat has documents, ensure selectedModel is qwen3:8b
+      const hasDocs = await File.exists({ chatId: id, scope: "chat", category: { $ne: "image" } });
+      if (hasDocs && chat.selectedModel !== "qwen3:8b") {
+        chat.selectedModel = "qwen3:8b";
+        await chat.save().catch(() => {});
+      }
     }
 
     res.json({ success: true, chat, ...chat.toJSON() });
@@ -121,7 +130,7 @@ router.patch("/:id", async (req, res) => {
   }
 });
 
-// DELETE /api/chats/:id — delete a chat and all its messages
+// DELETE /api/chats/:id — delete a chat and all its messages, files, and Qdrant RAG points
 router.delete("/:id", async (req, res) => {
   try {
     const userId = req.userId;
@@ -129,6 +138,12 @@ router.delete("/:id", async (req, res) => {
 
     await Chat.deleteOne({ _id: id, userId });
     await Message.deleteMany({ chatId: id });
+    await File.deleteMany({ chatId: id });
+
+    // Clean up vectors from Qdrant local_chat_documents collection
+    deletePointsByChatId(id).catch((delErr) => {
+      console.warn(`[chats.routes] Failed to delete Qdrant points for chat ${id}:`, delErr.message);
+    });
 
     res.json({ success: true });
   } catch (err) {
@@ -189,7 +204,7 @@ router.post("/:id/messages", async (req, res) => {
         _id: chatId,
         userId,
         title: role === "user" && content ? content.trim().slice(0, 30) : "New Chat",
-        selectedModel: model || "gemini-3.6-flash",
+        selectedModel: model || "qwen3:8b",
       });
     }
 

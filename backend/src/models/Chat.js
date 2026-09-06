@@ -38,7 +38,7 @@ const ChatSchema = new mongoose.Schema(
     },
     selectedModel: {
       type: String,
-      default: "gemini-3.6-flash",
+      default: "qwen3:8b",
     },
     folderId: {
       type: String,

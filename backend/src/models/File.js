@@ -23,6 +23,10 @@ const FileSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    originalName: {
+      type: String,
+      default: null,
+    },
     mimeType: {
       type: String,
       required: true,
@@ -33,13 +37,41 @@ const FileSchema = new mongoose.Schema(
     },
     category: {
       type: String,
-      default: "image",
+      default: "file",
     },
     path: {
       type: String,
       required: true,
     },
+    storagePath: {
+      type: String,
+      default: null,
+    },
+    chatId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    scope: {
+      type: String,
+      enum: ["chat", "knowledge_base"],
+      default: "chat",
+      index: true,
+    },
+    status: {
+      type: String,
+      enum: ["uploaded", "processing", "indexed", "failed"],
+      default: "uploaded",
+    },
+    chunkCount: {
+      type: Number,
+      default: 0,
+    },
     createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+    updatedAt: {
       type: Date,
       default: Date.now,
     },
@@ -47,8 +79,20 @@ const FileSchema = new mongoose.Schema(
   {
     _id: false,
     versionKey: false,
+    toJSON: {
+      virtuals: true,
+      transform: (_doc, ret) => {
+        ret.id = ret._id;
+        ret.originalName = ret.originalName || ret.filename;
+        ret.storagePath = ret.storagePath || ret.path;
+        return ret;
+      },
+    },
   }
 );
+
+// Compound index for fast chat-scoped lookups
+FileSchema.index({ chatId: 1, scope: 1, userId: 1 });
 
 const File = mongoose.models.File || mongoose.model("File", FileSchema);
 export default File;

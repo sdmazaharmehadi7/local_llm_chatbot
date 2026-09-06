@@ -14,6 +14,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import mongoose from "mongoose";
 import File from "../models/File.js";
+import { isIndexableDocument, processAndIndexDocument } from "../services/rag.service.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,17 +25,63 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-// Allowed MIME types for images
+// Allowed MIME types for images, documents, and code
 const ALLOWED_MIME_TYPES = new Set([
   "image/png",
   "image/jpeg",
   "image/jpg",
   "image/webp",
+  "image/gif",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "text/html",
+  "text/xml",
+  "text/css",
+  "text/javascript",
+  "application/javascript",
+  "application/json",
+  "application/x-yaml",
+  "application/yaml",
+  "text/yaml",
 ]);
 
-const ALLOWED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+const ALLOWED_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".pdf",
+  ".txt",
+  ".md",
+  ".markdown",
+  ".csv",
+  ".json",
+  ".jsonl",
+  ".yaml",
+  ".yml",
+  ".html",
+  ".htm",
+  ".xml",
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".jsx",
+  ".tsx",
+  ".py",
+  ".java",
+  ".c",
+  ".cpp",
+  ".css",
+  ".log",
+  ".sql",
+  ".sh",
+]);
 
-const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25MB
 
 function formatFileSize(bytes) {
   if (bytes === 0) return "0 Bytes";
@@ -58,10 +105,18 @@ const storage = multer.diskStorage({
 
 const fileFilter = (_req, file, cb) => {
   const ext = path.extname(file.originalname).toLowerCase();
-  if (ALLOWED_MIME_TYPES.has(file.mimetype) || ALLOWED_EXTENSIONS.has(ext)) {
+  if (
+    ALLOWED_MIME_TYPES.has(file.mimetype) ||
+    ALLOWED_EXTENSIONS.has(ext) ||
+    file.mimetype.startsWith("text/")
+  ) {
     cb(null, true);
   } else {
-    cb(new Error("Unsupported file type. Only PNG, JPG/JPEG, and WEBP images are allowed."));
+    cb(
+      new Error(
+        "Unsupported file type. Supported types: PDF, Images (PNG, JPG, WEBP), and Text/Code documents."
+      )
+    );
   }
 };
 
@@ -75,7 +130,8 @@ const router = Router();
 
 /**
  * POST /api/files
- * Upload an image file attachment.
+ * Upload an attachment (image, PDF, or text document).
+ * Optional chatId can be passed via form-data or header.
  */
 router.post("/", (req, res) => {
   upload.single("file")(req, res, async (err) => {
@@ -96,26 +152,56 @@ router.post("/", (req, res) => {
     try {
       const fileId = path.parse(req.file.filename).name;
       const mimeType = req.file.mimetype || "application/octet-stream";
+      const ext = path.extname(req.file.originalname).toLowerCase();
       const isImage = mimeType.startsWith("image/");
+      const isPdf = mimeType === "application/pdf" || ext === ".pdf";
+
+      let category = "file";
+      if (isImage) {
+        category = "image";
+      } else if (isPdf) {
+        category = "pdf";
+      } else if (mimeType.startsWith("text/") || ext === ".txt" || ext === ".md") {
+        category = "textLike";
+      }
+
+      const chatId = req.body?.chatId || req.headers["x-chat-id"] || req.query?.chatId || null;
 
       const fileDoc = await File.create({
         _id: fileId,
         userId: req.userId,
         filename: req.file.originalname || "attachment",
+        originalName: req.file.originalname || "attachment",
         mimeType,
         size: req.file.size,
-        category: isImage ? "image" : "file",
+        category,
         path: req.file.path,
+        storagePath: req.file.path,
+        chatId: chatId ? String(chatId) : null,
+        scope: "chat",
+        status: "uploaded",
         createdAt: new Date(),
+        updatedAt: new Date(),
       });
+
+      // If document has chatId and is indexable, asynchronously trigger RAG ingestion
+      if (chatId && isIndexableDocument(fileDoc.filename, fileDoc.mimeType)) {
+        processAndIndexDocument(fileDoc).catch((ingestErr) => {
+          console.error(`[files.routes] Auto-indexing failed for ${fileId}:`, ingestErr.message);
+        });
+      }
 
       return res.status(201).json({
         id: fileDoc._id,
         filename: fileDoc.filename,
+        originalName: fileDoc.originalName,
         mimeType: fileDoc.mimeType,
         size: fileDoc.size,
         sizeFormatted: formatFileSize(fileDoc.size),
         category: fileDoc.category,
+        chatId: fileDoc.chatId,
+        scope: fileDoc.scope,
+        status: fileDoc.status,
         url: `/api/files/${fileDoc._id}/content`,
       });
     } catch (saveErr) {
