@@ -11,8 +11,13 @@
 
 import "dotenv/config";
 import app from "./app.js";
+import { connectDB } from "./db.js";
+import mongoose from "mongoose";
 
 const PORT = process.env.PORT || 5000;
+
+// Connect to MongoDB
+await connectDB();
 
 const server = app.listen(PORT, () => {
   console.log("─────────────────────────────────────────────");
@@ -29,8 +34,12 @@ const server = app.listen(PORT, () => {
 
 function shutdown(signal) {
   console.log(`\n[server] Received ${signal}. Shutting down gracefully…`);
-  server.close(() => {
+  server.close(async () => {
     console.log("[server] HTTP server closed.");
+    try {
+      await mongoose.disconnect();
+      console.log("[server] MongoDB disconnected.");
+    } catch {}
     process.exit(0);
   });
 

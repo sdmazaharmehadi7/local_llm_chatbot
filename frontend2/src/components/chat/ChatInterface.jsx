@@ -7,7 +7,7 @@ import { useChat } from "@/hooks/useChat";
 import { useChatVoice } from "@/hooks/useChatVoice";
 import { useChatMemoryEnabled } from "@/hooks/useMemoryStatus";
 import { useChatNavigation } from "@/hooks/useChatNavigation";
-import { useCreateChatMutation, useCreateMessageMutation } from "@/hooks/useChatsQuery";
+import { useCreateChatMutation, useCreateMessageMutation, useUpdateChatMutation } from "@/hooks/useChatsQuery";
 import { useImageGeneration } from "@/hooks/useImageGeneration";
 import { useUiState } from "@/state/useUiState";
 import { providersClient } from "@/lib/providersClient";
@@ -26,6 +26,7 @@ import VoiceStatusIndicator from "./VoiceStatusIndicator";
 const ChatInterface = ({ chatId }) => {
   const { navigateToChat } = useChatNavigation();
   const createChatMutation = useCreateChatMutation();
+  const updateChatMutation = useUpdateChatMutation();
   const preferredModel = useUiState((state) => state.preferredModel);
   const setPreferredModel = useUiState((state) => state.setPreferredModel);
   const imageMode = useUiState((state) => state.imageMode);
@@ -53,6 +54,13 @@ const ChatInterface = ({ chatId }) => {
     if (modelId === preferredModel) return;
     clearError();
     setPreferredModel(modelId);
+
+    if (chatId) {
+      updateChatMutation.mutate({
+        chatId,
+        updates: { selectedModel: modelId },
+      });
+    }
 
     const newModel = (allModels || []).find(
       (m) => m.model_id === modelId || m.id === modelId
@@ -89,12 +97,19 @@ const ChatInterface = ({ chatId }) => {
     stop,
     regenerate,
     setInput,
+    currentChat,
   } = useChat({
     id: chatId,
     model: preferredModel,
     webSearchEnabled,
     memoryEnabled,
   });
+
+  useEffect(() => {
+    if (currentChat?.selectedModel && currentChat.selectedModel !== preferredModel) {
+      setPreferredModel(currentChat.selectedModel);
+    }
+  }, [currentChat?.selectedModel]);
 
   const { voice } = useChatVoice({
     messages,

@@ -9,6 +9,7 @@ const SNAKE_TO_CAMEL = {
   chat_id: "chatId",
   user_id: "userId",
   folder_id: "folderId",
+  selected_model: "selectedModel",
 };
 
 function toCamelCase(obj) {
@@ -48,9 +49,6 @@ function getLocalMessages(chatId) {
     const raw = localStorage.getItem(`${STORAGE_MSGS_KEY}_${chatId}`);
     if (raw) return JSON.parse(raw);
   } catch {}
-  if (chatId === "welcome-chat") {
-    return [...MOCK_INITIAL_MESSAGES];
-  }
   return [];
 }
 
@@ -67,13 +65,9 @@ export const chatsClient = {
   async getChats() {
     try {
       const data = await chatsFetch("");
-      if (Array.isArray(data?.chats) && data.chats.length > 0) {
+      if (Array.isArray(data?.chats)) {
         saveLocalChats(data.chats);
         return data.chats;
-      }
-      const local = getLocalChats();
-      if (local && local.length > 0) {
-        return local;
       }
       return data?.chats || [];
     } catch {
@@ -98,11 +92,30 @@ export const chatsClient = {
     };
   },
 
-  async createChat(id = null, title = null, folderId = null) {
+  async createChat(id = null, title = null, folderId = null, selectedModel = null) {
+    try {
+      const data = await chatsFetch("", {
+        method: "POST",
+        body: JSON.stringify({
+          id,
+          title: title || "New Chat",
+          folder_id: folderId,
+          selected_model: selectedModel,
+        }),
+      });
+      const chat = data?.chat || data;
+      if (chat?.id) {
+        const chats = [chat, ...getLocalChats().filter((c) => c.id !== chat.id)];
+        saveLocalChats(chats);
+        return chat;
+      }
+    } catch {}
+
     const newChat = {
       id: id || `chat-${Date.now()}`,
       title: title || "New Chat",
       folderId: folderId || null,
+      selectedModel: selectedModel || "gemini-3.6-flash",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       pinnedAt: null,
@@ -110,16 +123,7 @@ export const chatsClient = {
     };
     const chats = [newChat, ...getLocalChats().filter((c) => c.id !== newChat.id)];
     saveLocalChats(chats);
-
-    try {
-      const data = await chatsFetch("", {
-        method: "POST",
-        body: JSON.stringify({ id: newChat.id, title: newChat.title, folder_id: folderId }),
-      });
-      return data?.chat || data || newChat;
-    } catch {
-      return newChat;
-    }
+    return newChat;
   },
 
   async updateChat(chatId, updates) {
@@ -152,13 +156,9 @@ export const chatsClient = {
   async getMessages(chatId) {
     try {
       const data = await chatsFetch(`/${chatId}/messages`);
-      if (Array.isArray(data?.messages) && data.messages.length > 0) {
+      if (Array.isArray(data?.messages)) {
         saveLocalMessages(chatId, data.messages);
         return data.messages;
-      }
-      const local = getLocalMessages(chatId);
-      if (local && local.length > 0) {
-        return local;
       }
       return data?.messages || [];
     } catch {

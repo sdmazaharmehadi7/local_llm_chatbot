@@ -1,17 +1,17 @@
 /**
  * Chats Routes
  *
- * Handles /api/chats/* endpoints.
+ * Handles /api/chats/* endpoints using MongoDB as the persistent source of truth.
  *
  * Routes:
  *   POST   /api/chats/:id/completion              — AI SDK v6 streaming completion
- *   GET    /api/chats                             — List all chats
- *   POST   /api/chats                             — Create a chat
+ *   GET    /api/chats                             — List all chats for current user
+ *   POST   /api/chats                             — Create a chat document in MongoDB
  *   GET    /api/chats/:id                         — Get single chat
- *   PATCH  /api/chats/:id                         — Update chat
- *   DELETE /api/chats/:id                         — Delete chat
+ *   PATCH  /api/chats/:id                         — Update chat (title, selectedModel, etc.)
+ *   DELETE /api/chats/:id                         — Delete chat and its messages
  *   GET    /api/chats/:id/messages                — Get messages for chat
- *   POST   /api/chats/:id/messages                — Add message to chat
+ *   POST   /api/chats/:id/messages                — Add / upsert message to chat
  *   DELETE /api/chats/:id/messages/:messageId     — Delete message from chat
  *   POST   /api/chats/:id/pin                     — Pin chat
  *   DELETE /api/chats/:id/pin                     — Unpin chat
@@ -20,234 +20,260 @@
  */
 
 import { Router } from "express";
+import mongoose from "mongoose";
+import Chat from "../models/Chat.js";
+import Message from "../models/Message.js";
 import { postCompletion } from "../controllers/completion.controller.js";
 
 const router = Router();
 
-// In-memory persistence for chats and messages
-const chatsStore = new Map([
-  [
-    "welcome-chat",
-    {
-      id: "welcome-chat",
-      title: "Welcome to Local Chat",
-      folder_id: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      pinned_at: null,
-      archived_at: null,
-    },
-  ],
-]);
-
-const messagesStore = new Map([
-  [
-    "welcome-chat",
-    [
-      {
-        id: "msg-welcome-1",
-        chat_id: "welcome-chat",
-        role: "assistant",
-        content:
-          "Welcome to Local Chat! Select a local model from the dropdown above and start chatting.",
-        parts: [
-          {
-            type: "text",
-            text:
-              "Welcome to Local Chat! Select a local model from the dropdown above and start chatting.",
-          },
-        ],
-        created_at: new Date().toISOString(),
-      },
-    ],
-  ],
-]);
-
-// POST /api/chats/:id/completion
-// Called by the frontend's DefaultChatTransport in useChatStream.js
+// POST /api/chats/:id/completion — streaming completion
 router.post("/:id/completion", postCompletion);
 
-// GET /api/chats — list all chats
-router.get("/", (_req, res) => {
-  const chats = Array.from(chatsStore.values()).sort(
-    (a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at)
-  );
-  res.json({ success: true, chats });
+// GET /api/chats — list all chats for current user, sorted by updatedAt desc
+router.get("/", async (req, res) => {
+  try {
+    const userId = req.userId;
+    const chats = await Chat.find({ userId }).sort({ updatedAt: -1 });
+    res.json({ success: true, chats });
+  } catch (err) {
+    console.error("[chats.routes] Failed to list chats:", err.message);
+    res.status(500).json({ success: false, error: "Failed to fetch chats." });
+  }
 });
 
-// POST /api/chats — create a chat
-router.post("/", (req, res) => {
-  const { id, title, folder_id } = req.body || {};
-  const chatId = id || `chat-${Date.now()}`;
-  const newChat = {
-    id: chatId,
-    title: title || "New Chat",
-    folder_id: folder_id || null,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    pinned_at: null,
-    archived_at: null,
-  };
-  chatsStore.set(chatId, newChat);
-  if (!messagesStore.has(chatId)) {
-    messagesStore.set(chatId, []);
+// POST /api/chats — create a new chat document in MongoDB
+router.post("/", async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { id, title, selectedModel, folderId, folder_id } = req.body || {};
+
+    const chatId = id || new mongoose.Types.ObjectId().toString();
+
+    const newChat = await Chat.create({
+      _id: chatId,
+      userId,
+      title: title || "New Chat",
+      selectedModel: selectedModel || "gemini-3.6-flash",
+      folderId: folderId || folder_id || null,
+      pinnedAt: null,
+      archivedAt: null,
+    });
+
+    res.json({ success: true, chat: newChat, ...newChat.toJSON() });
+  } catch (err) {
+    console.error("[chats.routes] Failed to create chat:", err.message);
+    res.status(500).json({ success: false, error: "Failed to create chat." });
   }
-  res.json({ success: true, chat: newChat, ...newChat });
 });
 
 // GET /api/chats/:id — get a single chat
-router.get("/:id", (req, res) => {
-  const { id } = req.params;
-  let chat = chatsStore.get(id);
-  if (!chat) {
-    chat = {
-      id,
-      title: "New Chat",
-      folder_id: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      pinned_at: null,
-      archived_at: null,
-    };
-    chatsStore.set(id, chat);
-  }
-  res.json({ success: true, chat, ...chat });
-});
+router.get("/:id", async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { id } = req.params;
 
-// PATCH /api/chats/:id — update a chat
-router.patch("/:id", (req, res) => {
-  const { id } = req.params;
-  let chat = chatsStore.get(id);
-  if (!chat) {
-    chat = {
-      id,
-      title: "New Chat",
-      folder_id: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      pinned_at: null,
-      archived_at: null,
-    };
-  }
-  const updated = {
-    ...chat,
-    ...req.body,
-    updated_at: new Date().toISOString(),
-  };
-  chatsStore.set(id, updated);
-  res.json({ success: true, chat: updated, ...updated });
-});
-
-// DELETE /api/chats/:id — delete a chat
-router.delete("/:id", (req, res) => {
-  const { id } = req.params;
-  chatsStore.delete(id);
-  messagesStore.delete(id);
-  res.json({ success: true });
-});
-
-// GET /api/chats/:id/messages — get messages for a chat
-router.get("/:id/messages", (req, res) => {
-  const { id } = req.params;
-  const messages = messagesStore.get(id) || [];
-  res.json({ success: true, messages });
-});
-
-// POST /api/chats/:id/messages — add message to a chat
-router.post("/:id/messages", (req, res) => {
-  const { id: chatId } = req.params;
-  const { id, role, content, parts, fileIds, model, metadata, createdAt } = req.body || {};
-  const messageId = id || `msg-${Date.now()}`;
-  const newMsg = {
-    id: messageId,
-    chat_id: chatId,
-    role: role || "user",
-    content: content || "",
-    parts: parts || [{ type: "text", text: content || "" }],
-    file_ids: fileIds || [],
-    model: model || null,
-    metadata: metadata || null,
-    created_at: createdAt
-      ? typeof createdAt === "number"
-        ? new Date(createdAt).toISOString()
-        : createdAt
-      : new Date().toISOString(),
-  };
-
-  if (!messagesStore.has(chatId)) {
-    messagesStore.set(chatId, []);
-  }
-  const msgs = messagesStore.get(chatId);
-  const existingIdx = msgs.findIndex((m) => m.id === messageId);
-  if (existingIdx >= 0) {
-    msgs[existingIdx] = newMsg;
-  } else {
-    msgs.push(newMsg);
-  }
-
-  // Update chat timestamp and title if first user message
-  const chat = chatsStore.get(chatId);
-  if (chat) {
-    chat.updated_at = new Date().toISOString();
-    if (chat.title === "New Chat" && role === "user" && content) {
-      chat.title = content.slice(0, 30);
+    let chat = await Chat.findOne({ _id: id, userId });
+    if (!chat) {
+      // If requested chat does not exist yet for this user, create it automatically
+      chat = await Chat.create({
+        _id: id,
+        userId,
+        title: "New Chat",
+        selectedModel: "gemini-3.6-flash",
+      });
     }
-  } else {
-    chatsStore.set(chatId, {
-      id: chatId,
-      title: role === "user" && content ? content.slice(0, 30) : "New Chat",
-      folder_id: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      pinned_at: null,
-      archived_at: null,
-    });
-  }
 
-  res.json({ success: true, message: newMsg, ...newMsg });
+    res.json({ success: true, chat, ...chat.toJSON() });
+  } catch (err) {
+    console.error(`[chats.routes] Failed to get chat ${req.params.id}:`, err.message);
+    res.status(500).json({ success: false, error: "Failed to get chat." });
+  }
+});
+
+// PATCH /api/chats/:id — update a chat (e.g. title, selectedModel, folderId)
+router.patch("/:id", async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { id } = req.params;
+    const { title, selectedModel, folderId, folder_id, pinnedAt, archivedAt } = req.body || {};
+
+    const updates = {};
+    if (title !== undefined) updates.title = title;
+    if (selectedModel !== undefined) updates.selectedModel = selectedModel;
+    if (folderId !== undefined || folder_id !== undefined) {
+      updates.folderId = folderId !== undefined ? folderId : folder_id;
+    }
+    if (pinnedAt !== undefined) updates.pinnedAt = pinnedAt;
+    if (archivedAt !== undefined) updates.archivedAt = archivedAt;
+    updates.updatedAt = new Date();
+
+    const chat = await Chat.findOneAndUpdate(
+      { _id: id, userId },
+      { $set: updates },
+      { new: true, upsert: true }
+    );
+
+    res.json({ success: true, chat, ...chat.toJSON() });
+  } catch (err) {
+    console.error(`[chats.routes] Failed to update chat ${req.params.id}:`, err.message);
+    res.status(500).json({ success: false, error: "Failed to update chat." });
+  }
+});
+
+// DELETE /api/chats/:id — delete a chat and all its messages
+router.delete("/:id", async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { id } = req.params;
+
+    await Chat.deleteOne({ _id: id, userId });
+    await Message.deleteMany({ chatId: id });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(`[chats.routes] Failed to delete chat ${req.params.id}:`, err.message);
+    res.status(500).json({ success: false, error: "Failed to delete chat." });
+  }
+});
+
+// GET /api/chats/:id/messages — get all messages for a chat from MongoDB
+router.get("/:id/messages", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const messages = await Message.find({ chatId: id }).sort({ createdAt: 1 });
+    res.json({ success: true, messages });
+  } catch (err) {
+    console.error(`[chats.routes] Failed to get messages for ${req.params.id}:`, err.message);
+    res.status(500).json({ success: false, error: "Failed to fetch messages." });
+  }
+});
+
+// POST /api/chats/:id/messages — add or upsert a message to a chat
+router.post("/:id/messages", async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { id: chatId } = req.params;
+    const { id, role, content, parts, fileIds, model, metadata, createdAt } = req.body || {};
+
+    const messageId = id || new mongoose.Types.ObjectId().toString();
+    const messageCreatedAt = createdAt ? new Date(createdAt) : new Date();
+
+    const messageDoc = await Message.findOneAndUpdate(
+      { _id: messageId, chatId },
+      {
+        $set: {
+          chatId,
+          role: role || "user",
+          content: content || "",
+          parts: parts || [{ type: "text", text: content || "" }],
+          fileIds: fileIds || [],
+          model: model || null,
+          metadata: metadata || null,
+          createdAt: messageCreatedAt,
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    // Update parent chat's updatedAt and title if first user message
+    const chat = await Chat.findOne({ _id: chatId, userId });
+    if (chat) {
+      chat.updatedAt = new Date();
+      if (chat.title === "New Chat" && role === "user" && content && content.trim()) {
+        chat.title = content.trim().slice(0, 30);
+      }
+      await chat.save();
+    } else {
+      await Chat.create({
+        _id: chatId,
+        userId,
+        title: role === "user" && content ? content.trim().slice(0, 30) : "New Chat",
+        selectedModel: model || "gemini-3.6-flash",
+      });
+    }
+
+    res.json({ success: true, message: messageDoc, ...messageDoc.toJSON() });
+  } catch (err) {
+    console.error(`[chats.routes] Failed to save message for ${req.params.id}:`, err.message);
+    res.status(500).json({ success: false, error: "Failed to save message." });
+  }
 });
 
 // DELETE /api/chats/:id/messages/:messageId — delete a single message
-router.delete("/:id/messages/:messageId", (req, res) => {
-  const { id: chatId, messageId } = req.params;
-  const msgs = messagesStore.get(chatId) || [];
-  messagesStore.set(
-    chatId,
-    msgs.filter((m) => m.id !== messageId)
-  );
-  res.json({ success: true });
+router.delete("/:id/messages/:messageId", async (req, res) => {
+  try {
+    const { id: chatId, messageId } = req.params;
+    await Message.deleteOne({ _id: messageId, chatId });
+    res.json({ success: true });
+  } catch (err) {
+    console.error(`[chats.routes] Failed to delete message ${req.params.messageId}:`, err.message);
+    res.status(500).json({ success: false, error: "Failed to delete message." });
+  }
 });
 
 // POST /api/chats/:id/pin
-router.post("/:id/pin", (req, res) => {
-  const { id } = req.params;
-  const chat = chatsStore.get(id);
-  if (chat) chat.pinned_at = new Date().toISOString();
-  res.json({ success: true, chat });
+router.post("/:id/pin", async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { id } = req.params;
+    const chat = await Chat.findOneAndUpdate(
+      { _id: id, userId },
+      { $set: { pinnedAt: new Date() } },
+      { new: true }
+    );
+    res.json({ success: true, chat });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Failed to pin chat." });
+  }
 });
 
 // DELETE /api/chats/:id/pin
-router.delete("/:id/pin", (req, res) => {
-  const { id } = req.params;
-  const chat = chatsStore.get(id);
-  if (chat) chat.pinned_at = null;
-  res.json({ success: true, chat });
+router.delete("/:id/pin", async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { id } = req.params;
+    const chat = await Chat.findOneAndUpdate(
+      { _id: id, userId },
+      { $set: { pinnedAt: null } },
+      { new: true }
+    );
+    res.json({ success: true, chat });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Failed to unpin chat." });
+  }
 });
 
 // POST /api/chats/:id/archive
-router.post("/:id/archive", (req, res) => {
-  const { id } = req.params;
-  const chat = chatsStore.get(id);
-  if (chat) chat.archived_at = new Date().toISOString();
-  res.json({ success: true, chat });
+router.post("/:id/archive", async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { id } = req.params;
+    const chat = await Chat.findOneAndUpdate(
+      { _id: id, userId },
+      { $set: { archivedAt: new Date() } },
+      { new: true }
+    );
+    res.json({ success: true, chat });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Failed to archive chat." });
+  }
 });
 
 // DELETE /api/chats/:id/archive
-router.delete("/:id/archive", (req, res) => {
-  const { id } = req.params;
-  const chat = chatsStore.get(id);
-  if (chat) chat.archived_at = null;
-  res.json({ success: true, chat });
+router.delete("/:id/archive", async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { id } = req.params;
+    const chat = await Chat.findOneAndUpdate(
+      { _id: id, userId },
+      { $set: { archivedAt: null } },
+      { new: true }
+    );
+    res.json({ success: true, chat });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Failed to unarchive chat." });
+  }
 });
 
 export default router;

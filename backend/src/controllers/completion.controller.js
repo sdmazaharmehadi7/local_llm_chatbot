@@ -12,22 +12,20 @@
  *     memoryEnabled: boolean
  *   }
  *
- * Routing:
- *  - If model is a cloud model (e.g., gemini-3.6-flash) → streams via Gemini service
- *  - Otherwise → streams via Ollama with one-model-at-a-time RAM management
- *
- * Returns an SSE stream in the AI SDK v6 UI Message Stream protocol:
- *   data: {"type":"start","messageId":"<uuid>"}\n\n
- *   data: {"type":"start-step"}\n\n
- *   data: {"type":"text-start","id":"text-1"}\n\n
- *   data: {"type":"text-delta","id":"text-1","delta":"..."}\n\n
- *   ...
- *   data: {"type":"text-end","id":"text-1"}\n\n
- *   data: {"type":"finish-step"}\n\n
- *   data: {"type":"finish","finishReason":"stop"}\n\n
- *   data: [DONE]\n\n
+ * Multi-Turn Architecture:
+ *   1. Verifies chat ownership for req.userId.
+ *   2. Persists incoming user message into MongoDB (preventing duplicates via ID upsert).
+ *   3. Loads the chat's persistent message history from MongoDB for chatId.
+ *   4. Supplies the complete conversation context to the selected model.
+ *   5. Streams the assistant response as SSE (AI SDK v6 UI Message Stream protocol).
+ *   6. Upon stream completion, persists ONE complete assistant message with the model name to MongoDB.
+ *   7. Updates Chat.updatedAt and auto-titles if necessary.
  */
 
+import crypto from "crypto";
+import mongoose from "mongoose";
+import Chat from "../models/Chat.js";
+import Message from "../models/Message.js";
 import {
   streamChatFromOllama,
   getActiveModel,
@@ -44,8 +42,7 @@ function sseChunk(part) {
 }
 
 /**
- * Convert frontend messages to Ollama format.
- * Frontend sends: [{ id, role, content, fileIds }]
+ * Convert internal messages to Ollama format.
  * Ollama expects: [{ role, content }]
  */
 function toOllamaMessages(messages) {
@@ -70,9 +67,9 @@ function beginSseStream(res) {
 // ── Gemini streaming ─────────────────────────────────────────────────────────
 
 /**
- * Stream chat through Gemini 3.6 Flash.
+ * Stream chat through Gemini 3.6 Flash and persist response to MongoDB.
  */
-async function streamGeminiCompletion(res, messages, chatId) {
+async function streamGeminiCompletion(res, messages, chatId, targetModel) {
   if (!process.env.GEMINI_API_KEY) {
     return res.status(503).json({
       success: false,
@@ -89,18 +86,20 @@ async function streamGeminiCompletion(res, messages, chatId) {
 
   let aborted = false;
   let finishReason = "stop";
+  let fullResponseText = "";
 
   res.on("close", () => {
     if (!res.writableEnded) aborted = true;
   });
 
-  console.log(`[CHAT] Using model: gemini-3.6-flash`);
+  console.log(`[CHAT] Using model: ${targetModel}`);
   console.log(`[CHAT] Streaming started (Gemini)`);
 
   try {
     for await (const delta of streamChatFromGemini(messages)) {
       if (aborted) break;
       if (delta) {
+        fullResponseText += delta;
         res.write(sseChunk({ type: "text-delta", id: "text-1", delta }));
       }
     }
@@ -121,12 +120,39 @@ async function streamGeminiCompletion(res, messages, chatId) {
   res.end();
 
   console.log(`[CHAT] Streaming completed (Gemini)`);
+
+  // Persist ONE complete assistant message in MongoDB
+  if (!aborted && fullResponseText.trim()) {
+    try {
+      await Message.findOneAndUpdate(
+        { _id: messageId, chatId },
+        {
+          $set: {
+            chatId,
+            role: "assistant",
+            content: fullResponseText,
+            parts: [{ type: "text", text: fullResponseText }],
+            model: targetModel,
+            createdAt: new Date(),
+          },
+        },
+        { upsert: true, new: true }
+      );
+
+      await Chat.updateOne(
+        { _id: chatId },
+        { $set: { updatedAt: new Date(), selectedModel: targetModel } }
+      );
+    } catch (saveErr) {
+      console.error("[completion.controller] Failed to persist Gemini assistant message:", saveErr.message);
+    }
+  }
 }
 
 // ── Ollama streaming ──────────────────────────────────────────────────────────
 
 /**
- * Stream chat through local Ollama model.
+ * Stream chat through local Ollama model and persist response to MongoDB.
  */
 async function streamOllamaCompletion(res, messages, targetModel, chatId) {
   // Check Ollama reachability
@@ -186,6 +212,7 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
   let finishReason = "stop";
   let aborted = false;
   let inThinking = false;
+  let fullResponseText = "";
 
   res.on("close", () => {
     if (!res.writableEnded) aborted = true;
@@ -249,6 +276,7 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
             inThinking = false;
             res.write(sseChunk({ type: "text-delta", id: "text-1", delta: "\n</think>\n\n" }));
           }
+          fullResponseText += contentDelta;
           res.write(sseChunk({ type: "text-delta", id: "text-1", delta: contentDelta }));
         }
 
@@ -274,6 +302,7 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
             inThinking = false;
             res.write(sseChunk({ type: "text-delta", id: "text-1", delta: "\n</think>\n\n" }));
           }
+          fullResponseText += contentDelta;
           res.write(sseChunk({ type: "text-delta", id: "text-1", delta: contentDelta }));
         }
       } catch {
@@ -302,6 +331,33 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
   res.end();
 
   console.log(`[CHAT] Streaming completed`);
+
+  // Persist ONE complete assistant message in MongoDB
+  if (!aborted && fullResponseText.trim()) {
+    try {
+      await Message.findOneAndUpdate(
+        { _id: messageId, chatId },
+        {
+          $set: {
+            chatId,
+            role: "assistant",
+            content: fullResponseText,
+            parts: [{ type: "text", text: fullResponseText }],
+            model: targetModel,
+            createdAt: new Date(),
+          },
+        },
+        { upsert: true, new: true }
+      );
+
+      await Chat.updateOne(
+        { _id: chatId },
+        { $set: { updatedAt: new Date(), selectedModel: targetModel } }
+      );
+    } catch (saveErr) {
+      console.error("[completion.controller] Failed to persist Ollama assistant message:", saveErr.message);
+    }
+  }
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
@@ -312,6 +368,7 @@ async function streamOllamaCompletion(res, messages, targetModel, chatId) {
 export async function postCompletion(req, res) {
   const { id: chatId } = req.params;
   const { messages, model: requestedModel } = req.body;
+  const userId = req.userId;
 
   // Validate request
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -323,11 +380,56 @@ export async function postCompletion(req, res) {
 
   const targetModel = requestedModel || getActiveModel();
 
+  // 1. Verify / ensure chat document exists in MongoDB for this user
+  let chat = await Chat.findOne({ _id: chatId, userId });
+  if (!chat) {
+    chat = await Chat.create({
+      _id: chatId,
+      userId,
+      title: "New Chat",
+      selectedModel: targetModel,
+    });
+  }
+
+  // 2. Save incoming user message to MongoDB to ensure persistence
+  const incomingUserMsg = messages[messages.length - 1];
+  if (incomingUserMsg && incomingUserMsg.role === "user") {
+    const userMsgId = incomingUserMsg.id || new mongoose.Types.ObjectId().toString();
+    await Message.findOneAndUpdate(
+      { _id: userMsgId, chatId },
+      {
+        $set: {
+          chatId,
+          role: "user",
+          content: incomingUserMsg.content || "",
+          parts: incomingUserMsg.parts || [{ type: "text", text: incomingUserMsg.content || "" }],
+          fileIds: incomingUserMsg.fileIds || [],
+          model: targetModel,
+          createdAt: incomingUserMsg.createdAt ? new Date(incomingUserMsg.createdAt) : new Date(),
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    // Auto-update chat title from first message if still "New Chat"
+    if (chat.title === "New Chat" && incomingUserMsg.content && incomingUserMsg.content.trim()) {
+      chat.title = incomingUserMsg.content.trim().slice(0, 30);
+      await chat.save();
+    }
+  }
+
+  // 3. Load entire conversation history from MongoDB for this chatId ONLY
+  const dbMessages = await Message.find({ chatId }).sort({ createdAt: 1 }).lean();
+  const conversationContext = dbMessages.map((m) => ({
+    role: m.role,
+    content: m.content || "",
+  }));
+
   // Route to Gemini if cloud model requested
   if (isCloudModelId(targetModel)) {
-    return streamGeminiCompletion(res, messages, chatId);
+    return streamGeminiCompletion(res, conversationContext, chatId, targetModel);
   }
 
   // Otherwise route to Ollama
-  return streamOllamaCompletion(res, messages, targetModel, chatId);
+  return streamOllamaCompletion(res, conversationContext, targetModel, chatId);
 }
