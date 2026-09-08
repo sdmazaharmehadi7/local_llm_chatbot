@@ -45,6 +45,12 @@ import {
 } from "../services/rag.service.js";
 import { countPointsForChat } from "../services/qdrant.service.js";
 import { routeMessage } from "../services/ragRouter.service.js";
+import {
+  retrieveKnowledgeBaseContext,
+  getKnowledgeBaseDocuments,
+  getKnowledgeBaseDocumentNames,
+} from "../services/knowledgeBase.service.js";
+import { buildAugmentedKnowledgeBaseMessages } from "../services/contextBuilder.service.js";
 
 /** Serialize one UI-message-stream chunk as an SSE data line. */
 function sseChunk(part) {
@@ -614,24 +620,36 @@ export async function postCompletion(req, res) {
   // 7. RAG Router Decision
   const userQuery = incomingUserMsg?.content || "";
   const previousHistory = dbMessages.slice(0, -1);
+  const workspaceId = req.headers["x-workspace-id"] || req.workspaceId || "default";
+
+  // Fetch Knowledge Base documents for router matching
+  const kbDocuments = await getKnowledgeBaseDocuments(workspaceId);
+  const kbDocumentNames = kbDocuments.map((d) => d.filename);
+  const hasKnowledgeBaseDocuments = kbDocuments.length > 0;
+
   const routeDecision = routeMessage({
     message: userQuery,
     conversationHistory: previousHistory,
     hasChatDocuments,
     attachedFiles,
+    hasKnowledgeBaseDocuments,
+    knowledgeBaseDocuments: kbDocuments,
+    knowledgeBaseDocumentNames: kbDocumentNames,
   });
 
+  const effectiveRoute = routeDecision.route || (routeDecision.useRag ? "CHAT_DOCUMENT" : "GENERAL");
+
   console.log(
-    `[RAG_ROUTER] Chat ${chatId} decision: useRag=${routeDecision.useRag}, reason=${routeDecision.reason}`
+    `[RAG_ROUTER] Chat ${chatId} decision: route=${effectiveRoute}, mode=${routeDecision.retrievalMode || "N/A"}, targetDoc=${routeDecision.targetFilename || "none"}, reason=${routeDecision.reason}`
   );
 
   // ── GENERAL QUESTION PATH ────────────────────────────────────────────────
-  // If useRag === false:
+  // If route === "GENERAL" (or useRag === false):
   // - Bypasses nomic-embed-text completely (zero embedding calls).
   // - Bypasses Qdrant completely (zero vector searches).
   // - Does not emit any RAG status indicators.
   // - Routes directly to Qwen3 (or Gemini if requested for a pure general chat).
-  if (!routeDecision.useRag) {
+  if (effectiveRoute === "GENERAL" || !routeDecision.useRag) {
     if (isCloudModelId(targetModel) && !hasChatDocuments && !hasIncomingImage) {
       return streamGeminiCompletion(res, conversationContext, chatId, targetModel, []);
     }
@@ -639,14 +657,45 @@ export async function postCompletion(req, res) {
     return streamOllamaCompletion(res, conversationContext, targetModel, chatId, []);
   }
 
-  // ── DOCUMENT QUESTION PATH ───────────────────────────────────────────────
-  // If useRag === true:
-  // - Target model is strictly local Qwen3 8B.
-  // - Emits small status states: RAG_SEARCHING -> RAG_READING -> GENERATING.
-  // - Retrieves chunks via nomic-embed-text + Qdrant with chatId/scope isolation.
-  targetModel = "qwen3:8b";
+  // ── KNOWLEDGE BASE QUESTION PATH ─────────────────────────────────────────
+  if (effectiveRoute === "KNOWLEDGE_BASE") {
+    return handleKnowledgeBaseCompletion({
+      res,
+      userQuery,
+      conversationContext,
+      chatId,
+      userId,
+      workspaceId,
+      retrievalMode: routeDecision.retrievalMode,
+      targetDocumentId: routeDecision.targetDocumentId,
+      targetFilename: routeDecision.targetFilename,
+      targetModel: "qwen3:8b",
+    });
+  }
 
-  // Check Ollama reachability upfront before starting stream
+  // ── CHAT DOCUMENT QUESTION PATH ──────────────────────────────────────────
+  return handleRagCompletion({
+    res,
+    userQuery,
+    conversationContext,
+    chatId,
+    userId,
+    attachedFiles,
+    targetModel: "qwen3:8b",
+  });
+}
+
+// ── Chat RAG Handler ─────────────────────────────────────────────────────────
+
+async function handleRagCompletion({
+  res,
+  userQuery,
+  conversationContext,
+  chatId,
+  userId,
+  attachedFiles = [],
+  targetModel = "qwen3:8b",
+}) {
   const reachable = await isOllamaReachable();
   if (!reachable) {
     return res.status(503).json({
@@ -792,6 +841,174 @@ export async function postCompletion(req, res) {
     targetModel,
     chatId,
     ragResult.sources,
+    { messageId, sseStarted: true }
+  );
+}
+
+// ── Knowledge Base RAG Handler ───────────────────────────────────────────────
+
+async function handleKnowledgeBaseCompletion({
+  res,
+  userQuery,
+  conversationContext,
+  chatId,
+  userId,
+  workspaceId = "default",
+  retrievalMode = "GLOBAL",
+  targetDocumentId = null,
+  targetFilename = null,
+  targetModel = "qwen3:8b",
+}) {
+  const reachable = await isOllamaReachable();
+  if (!reachable) {
+    return res.status(503).json({
+      success: false,
+      error: "Ollama is not running. Please start Ollama manually.",
+    });
+  }
+
+  // Begin SSE stream
+  beginSseStream(res);
+  const messageId = crypto.randomUUID();
+  res.write(sseChunk({ type: "start", messageId }));
+  res.write(sseChunk({ type: "start-step" }));
+
+  // Status Indicator 1: "Searching Knowledge Base..."
+  res.write(
+    sseChunk({
+      type: "data-rag-status",
+      id: "rag-status",
+      data: {
+        state: "RAG_SEARCHING",
+        text: targetFilename
+          ? `Searching ${targetFilename}...`
+          : "Searching Knowledge Base...",
+      },
+    })
+  );
+
+  await sleep(400);
+
+  // Status Indicator 2: "Reading relevant sections..."
+  res.write(
+    sseChunk({
+      type: "data-rag-status",
+      id: "rag-status",
+      data: { state: "RAG_READING", text: "Reading relevant sections..." },
+    })
+  );
+
+  // Retrieve Knowledge Base context
+  const kbResult = await retrieveKnowledgeBaseContext({
+    query: userQuery.trim(),
+    documentId: targetDocumentId || null,
+    workspaceId,
+    userId,
+    limit: 8,
+    scoreThreshold: 0.35,
+  });
+
+  // Debug logging per Part 24
+  console.log(
+    `[KB_RAG] Query="${userQuery.slice(0, 40)}" | Route=KNOWLEDGE_BASE | Mode=${retrievalMode || (targetDocumentId ? "DOCUMENT_SPECIFIC" : "GLOBAL")} | Document=${targetFilename || "ALL"} (${targetDocumentId || "none"}) | Filter={scope:"knowledge_base",docId:${targetDocumentId ? `"${targetDocumentId}"` : "null"}} | Candidates=${kbResult.candidatesCount || 0} | ContextChunks=${kbResult.contextChunksCount || 0} | Sources=${kbResult.sources?.length || 0}`
+  );
+
+  await sleep(400);
+
+  // If Qdrant is unavailable: return concise error without crashing
+  if (kbResult.qdrantUnavailable) {
+    const errMsg =
+      "Knowledge Base retrieval is currently unavailable because the vector database is offline. Please ensure Qdrant is running.";
+    res.write(sseChunk({ type: "data-rag-status", id: "rag-status", data: { state: "GENERATING" } }));
+    res.write(sseChunk({ type: "text-start", id: "text-1" }));
+    res.write(sseChunk({ type: "text-delta", id: "text-1", delta: errMsg }));
+    res.write(sseChunk({ type: "text-end", id: "text-1" }));
+    res.write(sseChunk({ type: "finish-step" }));
+    res.write(sseChunk({ type: "finish", finishReason: "stop" }));
+    res.write("data: [DONE]\n\n");
+    res.end();
+
+    await Message.findOneAndUpdate(
+      { _id: messageId, chatId },
+      {
+        $set: {
+          chatId,
+          role: "assistant",
+          content: errMsg,
+          parts: [{ type: "text", text: errMsg }],
+          model: targetModel,
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true, returnDocument: "after" }
+    ).catch(() => {});
+    return;
+  }
+
+  // If no sufficiently relevant chunks found: return explicit message per Requirement 21
+  if (kbResult.noRelevantChunks || !kbResult.hasContext) {
+    console.log(`[completion.controller] No relevant KB chunks found for query in workspace ${workspaceId}.`);
+    const noInfoMsg = "I couldn't find relevant information in the Knowledge Base.";
+    res.write(sseChunk({ type: "data-rag-status", id: "rag-status", data: { state: "GENERATING" } }));
+    res.write(sseChunk({ type: "text-start", id: "text-1" }));
+    res.write(sseChunk({ type: "text-delta", id: "text-1", delta: noInfoMsg }));
+    res.write(sseChunk({ type: "text-end", id: "text-1" }));
+    res.write(sseChunk({ type: "finish-step" }));
+    res.write(sseChunk({ type: "finish", finishReason: "stop" }));
+    res.write("data: [DONE]\n\n");
+    res.end();
+
+    await Message.findOneAndUpdate(
+      { _id: messageId, chatId },
+      {
+        $set: {
+          chatId,
+          role: "assistant",
+          content: noInfoMsg,
+          parts: [{ type: "text", text: noInfoMsg }],
+          model: targetModel,
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true, returnDocument: "after" }
+    ).catch(() => {});
+    return;
+  }
+
+  // Transition RAG indicator to GENERATING
+  res.write(
+    sseChunk({
+      type: "data-rag-status",
+      id: "rag-status",
+      data: { state: "GENERATING" },
+    })
+  );
+
+  // Emit live sources event over SSE
+  if (kbResult.sources?.length > 0) {
+    res.write(
+      sseChunk({
+        type: "data-rag-sources",
+        id: "rag-sources",
+        data: { sources: kbResult.sources },
+      })
+    );
+  }
+
+  // Augment conversation context with Knowledge Base context
+  const finalContext = buildAugmentedKnowledgeBaseMessages(
+    conversationContext,
+    kbResult.contextText,
+    kbResult.sources
+  );
+
+  // Stream Ollama completion
+  return streamOllamaCompletion(
+    res,
+    finalContext,
+    targetModel,
+    chatId,
+    kbResult.sources,
     { messageId, sseStarted: true }
   );
 }

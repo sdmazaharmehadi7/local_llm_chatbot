@@ -1,117 +1,28 @@
 import { useState } from "react";
 import { Globe, FileText } from "lucide-react";
+import { extractSources, TOOL_ERROR_MESSAGES } from "./sourceUtils.js";
 
-export const TOOL_ERROR_MESSAGES = {
-  RATE_LIMITED: "Search provider rate limited. Try again in a moment.",
-  AUTH_FAILED: "Search API key is invalid or expired. Contact your admin.",
-  PROVIDER_ERROR: "Search provider returned an error. Try again.",
-  FETCH_FAILED: "Could not fetch the requested URL.",
-  SSRF_BLOCKED: "URL blocked for security reasons.",
-};
-
-export function extractSources(parts, metadata = null) {
-  const sources = [];
-  const seen = new Set();
-
-  if (Array.isArray(metadata?.ragSources)) {
-    for (const s of metadata.ragSources) {
-      const filename = s.filename || "document";
-      const page = s.page;
-      const key = `${filename}:::${page}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        sources.push({
-          title: page ? `${filename} — Page ${page}` : filename,
-          url: s.documentId ? `/api/files/${s.documentId}/content` : "#",
-          isDocument: true,
-          snippet: `Reference from ${filename}`,
-        });
-      }
-    }
-  }
-
-  if (!parts) {
-    return sources;
-  }
-
-  for (const part of parts) {
-    // Document RAG sources from data-rag-sources event
-    if (part.type === "data-rag-sources" && Array.isArray(part.data?.sources)) {
-      for (const s of part.data.sources) {
-        const filename = s.filename || "document";
-        const page = s.page;
-        const key = `${filename}:::${page}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          sources.push({
-            title: page ? `${filename} — Page ${page}` : filename,
-            url: s.documentId ? `/api/files/${s.documentId}/content` : "#",
-            isDocument: true,
-            snippet: `Reference from ${filename}`,
-          });
-        }
-      }
-      continue;
-    }
-
-    // Document RAG sources
-    if (
-      (part.type === "source" || part.type === "rag-source") &&
-      (part.isDocument || part.filename || part.source?.filename)
-    ) {
-      const filename = part.filename || part.source?.filename || "document";
-      const page = part.page || part.source?.page;
-      const key = `${filename}:::${page}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        sources.push({
-          title: page ? `${filename} — Page ${page}` : filename,
-          url: part.documentId ? `/api/files/${part.documentId}/content` : "#",
-          isDocument: true,
-          snippet: part.text || `Reference from ${filename}`,
-        });
-      }
-      continue;
-    }
-
-    if (part.type !== "tool-invocation" || part.state !== "result") {
-      continue;
-    }
-    if (part.toolName === "webSearch" && part.result?.results) {
-      for (const r of part.result.results) {
-        if (!seen.has(r.url)) {
-          seen.add(r.url);
-          sources.push({
-            title: r.title,
-            url: r.url,
-            snippet: r.snippet,
-            domain: r.domain,
-          });
-        }
-      }
-    }
-    if (part.toolName === "fetchUrl" && part.result?.url && !part.result?.error) {
-      if (!seen.has(part.result.url)) {
-        seen.add(part.result.url);
-        sources.push({
-          title: part.result.title,
-          url: part.result.url,
-          domain: new URL(part.result.url).hostname,
-        });
-      }
-    }
-  }
-  return sources;
-}
+export { extractSources, TOOL_ERROR_MESSAGES };
 
 export default function SourceCitations({ sources }) {
   if (!sources?.length) {
     return null;
   }
 
+  // Defensive deduplication before rendering: ensure ONE pill per document resource
+  const uniqueSources = [];
+  const seenKeys = new Set();
+  for (const s of sources) {
+    const sKey = s.key || s.documentId || (s.isDocument ? (s.filename || s.title).toLowerCase() : s.url || s.title);
+    if (!seenKeys.has(sKey)) {
+      seenKeys.add(sKey);
+      uniqueSources.push({ ...s, reactKey: sKey });
+    }
+  }
+
   const [expanded, setExpanded] = useState(false);
-  const visibleSources = expanded ? sources : sources.slice(0, 5);
-  const hasMore = sources.length > 5;
+  const visibleSources = expanded ? uniqueSources : uniqueSources.slice(0, 5);
+  const hasMore = uniqueSources.length > 5;
 
   return (
     <div className="border-theme-border/30 mt-4 border-t pt-3">
@@ -122,12 +33,12 @@ export default function SourceCitations({ sources }) {
       <div className="flex flex-wrap gap-2">
         {visibleSources.map((source) => (
           <a
-            key={source.url + source.title}
+            key={source.reactKey}
             href={source.url}
             target="_blank"
             rel="noopener noreferrer"
-            title={source.snippet}
-            className="bg-theme-surface/60 border-theme-border/40 hover:bg-theme-surface hover:border-theme-border text-theme-text-muted hover:text-theme-text ease-snappy group inline-flex max-w-[200px] items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors duration-75">
+            title={source.title || source.snippet}
+            className="bg-theme-surface/60 border-theme-border/40 hover:bg-theme-surface hover:border-theme-border text-theme-text-muted hover:text-theme-text ease-snappy group inline-flex max-w-[280px] items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors duration-75">
             {source.isDocument ? (
               <FileText className="h-3.5 w-3.5 flex-shrink-0 text-theme-primary" />
             ) : (
@@ -141,7 +52,12 @@ export default function SourceCitations({ sources }) {
                 }}
               />
             )}
-            <span className="truncate">{source.title}</span>
+            <span className="truncate">{source.filename || source.title}</span>
+            {source.pageBadge && (
+              <span className="bg-theme-surface/90 border border-theme-border/60 text-theme-text-muted rounded px-1 text-[10px] font-medium flex-shrink-0">
+                {source.pageBadge}
+              </span>
+            )}
           </a>
         ))}
         {hasMore && (
@@ -149,7 +65,7 @@ export default function SourceCitations({ sources }) {
             type="button"
             onClick={() => setExpanded(!expanded)}
             className="text-theme-text-muted hover:text-theme-text text-xs font-medium">
-            {expanded ? "Show less" : `+${sources.length - 5} more`}
+            {expanded ? "Show less" : `+${uniqueSources.length - 5} more`}
           </button>
         )}
       </div>

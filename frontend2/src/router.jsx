@@ -19,6 +19,7 @@ const Admin = lazy(() => import("@/pages/authenticated/Admin"));
 const Settings = lazy(() => import("@/pages/authenticated/Settings"));
 const Import = lazy(() => import("@/pages/authenticated/Import"));
 const Folder = lazy(() => import("@/pages/authenticated/Folder"));
+const KnowledgeBase = lazy(() => import("@/pages/authenticated/KnowledgeBase"));
 
 // Loading component
 const LoadingSpinner = () => {
@@ -150,6 +151,16 @@ const folderRoute = createRoute({
   },
 });
 
+const knowledgeBaseRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: "/knowledge-base",
+  component: () => (
+    <Suspense fallback={<LoadingSpinner />}>
+      <KnowledgeBase />
+    </Suspense>
+  ),
+});
+
 // Route Tree
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -160,6 +171,7 @@ const routeTree = rootRoute.addChildren([
     settingsRoute,
     importRoute,
     folderRoute,
+    knowledgeBaseRoute,
   ]),
 ]);
 

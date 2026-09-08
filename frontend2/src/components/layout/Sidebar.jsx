@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { LOGO_ICON_NAMES, UI_CONSTANTS, FOLDER_CONSTANTS } from "@/shared";
 import * as LucideIcons from "lucide-react";
 import {
+  BookOpen,
   ChevronDown,
   ChevronRight,
   Folder,
@@ -397,7 +398,7 @@ const Sidebar = () => {
   const appName = settings?.appName;
   const logoIcon = settings?.logoIcon;
   const LogoIcon = LOGO_ICONS[logoIcon] || Zap;
-  const isUtilityRoute = pathname === "/admin" || pathname === "/settings";
+  const isUtilityRoute = pathname === "/admin" || pathname === "/settings" || pathname === "/knowledge-base";
   const forceExpanded = isUtilityRoute && !isMobile;
   const effectiveCollapsed = forceExpanded ? false : sidebarCollapsed;
 
@@ -585,6 +586,24 @@ const Sidebar = () => {
 
         {/* Divider */}
         <div className="bg-theme-surface mx-6 my-4 h-px" />
+
+        {/* Knowledge Base Navigation */}
+        <div className="px-4 pb-1">
+          <button
+            onClick={() => {
+              navigate({ to: "/knowledge-base" });
+              if (isMobile) setIsSidebarOpen(false);
+            }}
+            className={`ease-snappy flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors ${
+              pathname === "/knowledge-base"
+                ? "bg-theme-primary/15 text-theme-primary"
+                : "text-theme-text-muted hover:text-theme-text hover:bg-white/5"
+            }`}
+            title="Knowledge Base">
+            <BookOpen size={16} className="shrink-0" />
+            <span className="truncate">Knowledge Base</span>
+          </button>
+        </div>
 
         {/* Folders, Pinned, and Headers */}
         <div className="shrink-0 space-y-1 px-4">

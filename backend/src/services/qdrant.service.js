@@ -70,6 +70,7 @@ export async function ensureCollection() {
     await _createPayloadIndex("scope", "keyword");
     await _createPayloadIndex("userId", "keyword");
     await _createPayloadIndex("documentId", "keyword");
+    await _createPayloadIndex("workspaceId", "keyword");
 
     return true;
   } catch (err) {
@@ -335,6 +336,158 @@ export async function countPointsForChat(chatId) {
             { key: "scope", match: { value: "chat" } },
             { key: "chatId", match: { value: String(chatId) } },
           ],
+        },
+        exact: true,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!res.ok) return 0;
+    const data = await res.json();
+    return data?.result?.count || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Perform Knowledge Base similarity search.
+ *
+ * STRICT SECURITY & ISOLATION:
+ * - Must filter by scope = "knowledge_base"
+ * - Filters by workspaceId (default "default")
+ * - If userId is provided, applies user constraint
+ * - CANNOT retrieve chat-scoped documents (scope = "chat")
+ *
+ * @param {object} params
+ * @param {number[]} params.vector - Query embedding vector
+ * @param {string} [params.workspaceId="default"] - Workspace ID
+ * @param {string} [params.documentId=null] - Optional specific document ID filter
+ * @param {string} [params.workspaceId="default"] - Workspace ID
+ * @param {string} [params.userId=null] - User ID if authenticated
+ * @param {number} [params.limit=10] - Number of chunks to retrieve
+ * @param {number} [params.scoreThreshold=0.35] - Minimum cosine similarity threshold
+ * @returns {Promise<Array<{id: string, score: number, payload: object}>>}
+ */
+export async function searchKnowledgeBasePoints({
+  vector,
+  documentId = null,
+  workspaceId = "default",
+  userId = null,
+  limit = 10,
+  scoreThreshold = 0.35,
+}) {
+  if (!Array.isArray(vector) || vector.length === 0) {
+    console.warn("[qdrant.service] KB search aborted: empty query vector.");
+    return [];
+  }
+
+  const mustFilters = [{ key: "scope", match: { value: "knowledge_base" } }];
+
+  if (documentId) {
+    mustFilters.push({ key: "documentId", match: { value: String(documentId) } });
+  }
+
+  if (workspaceId) {
+    mustFilters.push({ key: "workspaceId", match: { value: String(workspaceId) } });
+  }
+
+  if (userId) {
+    mustFilters.push({ key: "userId", match: { value: String(userId) } });
+  }
+
+  const searchPayload = {
+    vector,
+    limit,
+    filter: {
+      must: mustFilters,
+    },
+    with_payload: true,
+    score_threshold: scoreThreshold,
+  };
+
+  try {
+    const res = await fetch(`${QDRANT_URL}/collections/${COLLECTION_NAME}/points/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(searchPayload),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error(`[qdrant.service] KB search request failed (${res.status}):`, errText);
+      return [];
+    }
+
+    const data = await res.json();
+    return data?.result || [];
+  } catch (err) {
+    console.error("[qdrant.service] KB search error:", err.message);
+    return [];
+  }
+}
+
+/**
+ * Delete all points belonging to a Knowledge Base document.
+ *
+ * STRICT ISOLATION:
+ * Only deletes points with scope = "knowledge_base" AND documentId = targetId.
+ * Never touches chat points (scope = "chat").
+ *
+ * @param {string} documentId
+ * @param {string} [workspaceId="default"]
+ * @returns {Promise<boolean>}
+ */
+export async function deleteKnowledgeBasePoints(documentId, workspaceId = "default") {
+  if (!documentId) return false;
+
+  const mustFilters = [
+    { key: "scope", match: { value: "knowledge_base" } },
+    { key: "documentId", match: { value: String(documentId) } },
+  ];
+
+  if (workspaceId) {
+    mustFilters.push({ key: "workspaceId", match: { value: String(workspaceId) } });
+  }
+
+  try {
+    const res = await fetch(`${QDRANT_URL}/collections/${COLLECTION_NAME}/points/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filter: {
+          must: mustFilters,
+        },
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    return res.ok;
+  } catch (err) {
+    console.error(`[qdrant.service] Delete KB points for doc ${documentId} failed:`, err.message);
+    return false;
+  }
+}
+
+/**
+ * Count points for Knowledge Base in a given workspace.
+ * @param {string} [workspaceId="default"]
+ * @returns {Promise<number>}
+ */
+export async function countPointsForKnowledgeBase(workspaceId = "default") {
+  const mustFilters = [{ key: "scope", match: { value: "knowledge_base" } }];
+  if (workspaceId) {
+    mustFilters.push({ key: "workspaceId", match: { value: String(workspaceId) } });
+  }
+
+  try {
+    const res = await fetch(`${QDRANT_URL}/collections/${COLLECTION_NAME}/points/count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filter: {
+          must: mustFilters,
         },
         exact: true,
       }),

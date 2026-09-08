@@ -18,6 +18,7 @@ import chatsRoutes from "./routes/chats.routes.js";
 import modelsRoutes from "./routes/models.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import filesRoutes from "./routes/files.routes.js";
+import knowledgeBaseRoutes from "./routes/knowledgeBase.routes.js";
 import authMiddleware from "./middleware/auth.middleware.js";
 import { checkOllamaHealth } from "./services/ollama.service.js";
 
@@ -67,6 +68,9 @@ app.use("/api/chat", chatRoutes);
 
 // File upload & attachment management
 app.use("/api/files", filesRoutes);
+
+// Knowledge Base document management & RAG
+app.use("/api/knowledge-base", knowledgeBaseRoutes);
 
 // AI SDK v6 streaming completion — consumed by useChatStream.js / @ai-sdk/react
 // POST /api/chats/:id/completion
