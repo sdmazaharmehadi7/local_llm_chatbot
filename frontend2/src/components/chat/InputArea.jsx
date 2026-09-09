@@ -1,6 +1,6 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { UI_CONSTANTS, ATTACHMENT_INPUT_ACCEPT, ATTACHMENT_TITLE_TEXT } from "@/shared";
-import { Paperclip, Image, Globe, Send, Mic, MicOff, Square } from "lucide-react";
+import { Paperclip, Image, Globe, Send, Mic, MicOff, Square, BookOpen, Sparkles } from "lucide-react";
 import ChatMemoryButton from "./ChatMemoryButton";
 import { useFileUploader } from "@/hooks/useFileUploader";
 import { useFileDragDrop } from "@/hooks/useFileDragDrop";
@@ -9,8 +9,26 @@ import { useUiState } from "@/state/useUiState";
 
 const FILE_INPUT_ID = "chat-input-file-upload";
 
+const SLASH_COMMANDS = [
+  {
+    command: "/knowledgebase",
+    label: "Knowledge Base",
+    description: "Search documents, manuals, and knowledge base",
+    icon: BookOpen,
+    badge: "RAG",
+  },
+  {
+    command: "/agent",
+    label: "Agent Workflow",
+    description: "Multi-step reasoning with tool use and computation",
+    icon: Sparkles,
+    badge: "Agent",
+  },
+];
+
 const InputArea = ({
   input,
+  setInput,
   handleInputChange,
   handleSubmit,
   disabled,
@@ -29,6 +47,8 @@ const InputArea = ({
   onStop,
 }) => {
   const textareaRef = useRef(null);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [dismissedInput, setDismissedInput] = useState(null);
   const { uploadFiles, uploading, currentFile } = useFileUploader({
     onFilesUploaded,
     chatId,
@@ -80,7 +100,70 @@ const InputArea = ({
 
   const hasContent = input.trim() || selectedFiles.length > 0;
 
+  const query = input.startsWith("/") && !input.includes(" ") ? input.slice(1).toLowerCase() : "";
+  const filteredCommands =
+    input.startsWith("/") && !input.includes(" ")
+      ? SLASH_COMMANDS.filter(
+          (cmd) =>
+            cmd.command.toLowerCase().includes(query) ||
+            cmd.label.toLowerCase().includes(query)
+        )
+      : [];
+
+  const isSlashMenuOpen =
+    input.startsWith("/") &&
+    !input.includes(" ") &&
+    filteredCommands.length > 0 &&
+    dismissedInput !== input;
+
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [query]);
+
+  const handleSelectCommand = (cmd) => {
+    const nextVal = `${cmd.command} `;
+    if (setInput) {
+      setInput(nextVal);
+    } else {
+      handleInputChange({ target: { value: nextVal } });
+    }
+    setDismissedInput(nextVal);
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+      setTimeout(() => {
+        if (textareaRef.current) {
+          adjustHeight(textareaRef.current);
+        }
+      }, 0);
+    }
+  };
+
   const handleKeyDown = (e) => {
+    if (isSlashMenuOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedIndex((prev) => (prev + 1) % filteredCommands.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedIndex((prev) => (prev - 1 + filteredCommands.length) % filteredCommands.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        if (filteredCommands[selectedIndex]) {
+          handleSelectCommand(filteredCommands[selectedIndex]);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDismissedInput(input);
+        return;
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!disabled && hasContent) {
@@ -142,6 +225,60 @@ const InputArea = ({
           </div>
         </div>
       )}
+
+      {/* Slash Command Autocomplete Dropdown */}
+      {isSlashMenuOpen && (
+        <div
+          role="listbox"
+          aria-label="Slash commands"
+          className="bg-theme-surface/95 border-theme-border text-theme-text absolute bottom-full left-0 mb-3 w-full max-w-sm rounded-xl border p-1.5 shadow-2xl backdrop-blur-xl z-30 transition-all">
+          <div className="text-theme-muted flex items-center justify-between px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider">
+            <span>Commands</span>
+            <span className="text-[10px] font-normal normal-case opacity-70">Tab or ↵ to select</span>
+          </div>
+          <div className="space-y-1">
+            {filteredCommands.map((cmd, idx) => {
+              const Icon = cmd.icon;
+              const isSelected = idx === selectedIndex;
+              return (
+                <button
+                  key={cmd.command}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  onMouseEnter={() => setSelectedIndex(idx)}
+                  onClick={() => handleSelectCommand(cmd)}
+                  className={`flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors duration-150 ${
+                    isSelected
+                      ? "bg-theme-primary/10 text-theme-primary"
+                      : "hover:bg-theme-surface-strong/60 text-theme-text"
+                  }`}>
+                  <div
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                      isSelected
+                        ? "bg-theme-primary/20 text-theme-primary"
+                        : "bg-theme-surface-strong text-theme-muted"
+                    }`}>
+                    <Icon size={16} />
+                  </div>
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm font-semibold">{cmd.command}</span>
+                      {cmd.badge && (
+                        <span className="bg-theme-surface-strong text-theme-muted rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+                          {cmd.badge}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-theme-muted truncate text-xs">{cmd.description}</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="flex w-full flex-col">
         <input
           id={FILE_INPUT_ID}

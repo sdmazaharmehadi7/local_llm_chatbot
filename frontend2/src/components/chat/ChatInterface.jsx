@@ -252,6 +252,7 @@ const ChatInterface = ({ chatId }) => {
 
             <InputArea
               input={input}
+              setInput={setInput}
               handleInputChange={handleInputChange}
               handleSubmit={handleSubmit}
               voiceControls={voice}
