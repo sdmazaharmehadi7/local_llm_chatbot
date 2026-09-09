@@ -86,7 +86,9 @@ const MessageItem = memo(({ message, onStop, onRegenerate, isStreaming = false }
           style={{ boxShadow: "var(--shadow-depth-sm)" }}>
           {!isUser && modelName && (
             <div className="mb-4">
-              <span className="text-theme-text text-lg font-bold">{modelName}</span>
+              <span className="text-theme-text text-lg font-bold">
+                {modelName === "agent" ? "🤖 Sovereign Agent" : modelName}
+              </span>
             </div>
           )}
 
@@ -137,6 +139,30 @@ const MessageItem = memo(({ message, onStop, onRegenerate, isStreaming = false }
                   <span>{TOOL_ERROR_MESSAGES[err.result.code] || err.result.error}</span>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Agent execution steps compact summary */}
+          {message.metadata?.steps?.length > 0 && (
+            <div className="border-theme-border/40 bg-theme-surface/60 mb-3 rounded-lg border p-2.5 text-xs">
+              <div className="text-theme-text-muted mb-1.5 flex items-center gap-1.5 font-semibold">
+                <span>🤖 Agent Steps</span>
+              </div>
+              <div className="space-y-1">
+                {message.metadata.steps.map((step, idx) => (
+                  <div
+                    key={idx}
+                    className="bg-theme-surface/70 text-theme-text-muted flex items-center justify-between rounded px-2 py-1">
+                    <span className="text-theme-text flex items-center gap-1.5 font-medium">
+                      <span className="text-theme-green">✓</span>
+                      <span className="capitalize">{step.toolName || step.action}</span>
+                    </span>
+                    {typeof step.executionTimeMs === "number" && (
+                      <span className="text-[11px] opacity-75">{step.executionTimeMs}ms</span>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

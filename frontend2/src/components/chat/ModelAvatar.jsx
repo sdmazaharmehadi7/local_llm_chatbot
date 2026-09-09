@@ -2,7 +2,7 @@ import { getProviderBranding, getProviderLogoUrl } from "@/lib/providerUtils";
 import { providersClient } from "@/lib/providersClient";
 import { CACHE_DURATIONS } from "@/shared";
 import { useQuery } from "@tanstack/react-query";
-import { Cpu } from "lucide-react";
+import { Bot, Cpu } from "lucide-react";
 import { useState } from "react";
 
 const MODEL_PREFIX_TO_PROVIDER = [
@@ -61,6 +61,16 @@ const ModelAvatar = ({ modelId }) => {
 
   const branding = providerId ? getProviderBranding(providerId) : null;
   const hasBranding = branding?.style;
+
+  if (modelId === "agent") {
+    return (
+      <div
+        className="from-theme-mauve to-theme-blue flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br text-white md:h-10 md:w-10"
+        style={{ boxShadow: "var(--shadow-depth-md)" }}>
+        <Bot className="h-5 w-5 md:h-6 md:w-6" />
+      </div>
+    );
+  }
 
   return (
     <div

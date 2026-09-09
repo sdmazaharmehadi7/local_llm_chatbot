@@ -93,6 +93,8 @@ const ChatInterface = ({ chatId }) => {
     error: chatError,
     clearError,
     isLoading,
+    isAgentWorking,
+    agentStatus,
     status,
     stop,
     regenerate,
@@ -229,6 +231,8 @@ const ChatInterface = ({ chatId }) => {
               messages={messages}
               isLoading={isLoading}
               isGeneratingImage={isGenerating}
+              isAgentWorking={isAgentWorking}
+              agentStatus={agentStatus}
               status={status}
               onRegenerate={regenerate}
               activeModelName={currentModelData?.display_name}
