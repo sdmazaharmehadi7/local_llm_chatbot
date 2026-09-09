@@ -352,6 +352,124 @@ console.log("\n[TEST 10] Ambiguous Similar Document Names");
   console.log("✔ TEST 10 PASSED: Ambiguous candidate documents correctly fell back to safe GLOBAL search.");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TEST 11: Slash Command: "/knowledgebase What is the company's safety procedure?"
+// Expected:
+// - Route = KNOWLEDGE_BASE, useRag = true
+// - Prefix "/knowledgebase" removed from cleanedQuery
+// - isEmptyCommand = false
+// - Mode = GLOBAL
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[TEST 11] Input: '/knowledgebase What is the company\\'s safety procedure?'");
+{
+  const result = routeMessage({
+    message: "/knowledgebase What is the company's safety procedure?",
+    hasKnowledgeBaseDocuments: true,
+    knowledgeBaseDocuments: MOCK_DOCS,
+  });
+
+  assert.strictEqual(result.route, "KNOWLEDGE_BASE");
+  assert.strictEqual(result.useRag, true);
+  assert.strictEqual(result.isEmptyCommand, false);
+  assert.strictEqual(result.cleanedQuery, "What is the company's safety procedure?");
+  assert.strictEqual(result.cleanedQuery.includes("/knowledgebase"), false, "Cleaned query must NOT include /knowledgebase");
+  console.log("✔ TEST 11 PASSED: /knowledgebase command routed to KB with prefix removed.");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEST 12: Case-Insensitive Command: "/KNOWLEDGEBASE what are the safety rules?"
+// Expected:
+// - Case-insensitive detection (/KNOWLEDGEBASE, /KnowledgeBase)
+// - Route = KNOWLEDGE_BASE
+// - Cleaned query without prefix
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[TEST 12] Input: '/KNOWLEDGEBASE what are the safety rules?'");
+{
+  const result = routeMessage({
+    message: "/KNOWLEDGEBASE what are the safety rules?",
+    hasKnowledgeBaseDocuments: true,
+    knowledgeBaseDocuments: MOCK_DOCS,
+  });
+
+  assert.strictEqual(result.route, "KNOWLEDGE_BASE");
+  assert.strictEqual(result.useRag, true);
+  assert.strictEqual(result.cleanedQuery, "what are the safety rules?");
+  assert.strictEqual(result.cleanedQuery.toLowerCase().includes("/knowledgebase"), false);
+  console.log("✔ TEST 12 PASSED: Case-insensitive /KNOWLEDGEBASE command recognized.");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEST 13: Slash Command Alone: "/knowledgebase" and "/KnowledgeBase   "
+// Expected:
+// - isEmptyCommand = true
+// - cleanedQuery = ""
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[TEST 13] Input: '/knowledgebase' alone");
+{
+  const resultAlone = routeMessage({
+    message: "/knowledgebase",
+    hasKnowledgeBaseDocuments: true,
+    knowledgeBaseDocuments: MOCK_DOCS,
+  });
+
+  assert.strictEqual(resultAlone.route, "KNOWLEDGE_BASE");
+  assert.strictEqual(resultAlone.isEmptyCommand, true);
+  assert.strictEqual(resultAlone.cleanedQuery, "");
+
+  const resultSpaces = routeMessage({
+    message: "/KnowledgeBase   ",
+    hasKnowledgeBaseDocuments: true,
+    knowledgeBaseDocuments: MOCK_DOCS,
+  });
+
+  assert.strictEqual(resultSpaces.route, "KNOWLEDGE_BASE");
+  assert.strictEqual(resultSpaces.isEmptyCommand, true);
+  assert.strictEqual(resultSpaces.cleanedQuery, "");
+  console.log("✔ TEST 13 PASSED: /knowledgebase alone correctly identified as empty command.");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEST 14: Slash Command With Specific Document: "/knowledgebase What does Safety_Manual.pdf say about PPE?"
+// Expected:
+// - Route = KNOWLEDGE_BASE
+// - Mode = DOCUMENT_SPECIFIC
+// - targetDocumentId = doc-safety-101
+// - cleanedQuery without /knowledgebase
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[TEST 14] Input: '/knowledgebase What does Safety_Manual.pdf say about PPE?'");
+{
+  const result = routeMessage({
+    message: "/knowledgebase What does Safety_Manual.pdf say about PPE?",
+    hasKnowledgeBaseDocuments: true,
+    knowledgeBaseDocuments: MOCK_DOCS,
+  });
+
+  assert.strictEqual(result.route, "KNOWLEDGE_BASE");
+  assert.strictEqual(result.retrievalMode, "DOCUMENT_SPECIFIC");
+  assert.strictEqual(result.targetDocumentId, "doc-safety-101");
+  assert.strictEqual(result.cleanedQuery, "What does Safety_Manual.pdf say about PPE?");
+  assert.strictEqual(result.cleanedQuery.includes("/knowledgebase"), false);
+  console.log("✔ TEST 14 PASSED: /knowledgebase with specific document correctly resolves document ID.");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEST 15: General message without /knowledgebase remains unchanged
+// Expected:
+// - Normal general message routes to GENERAL
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[TEST 15] Input: 'In which direction does the sun rise?'");
+{
+  const result = routeMessage({
+    message: "In which direction does the sun rise?",
+    hasKnowledgeBaseDocuments: true,
+    knowledgeBaseDocuments: MOCK_DOCS,
+  });
+
+  assert.strictEqual(result.route, "GENERAL");
+  assert.strictEqual(result.useRag, false);
+  console.log("✔ TEST 15 PASSED: General message without /knowledgebase routed to GENERAL unchanged.");
+}
+
 console.log("\n==================================================");
-console.log("ALL 10 UNIT TEST SCENARIOS PASSED SUCCESSFULLY!");
+console.log("ALL 15 UNIT TEST SCENARIOS PASSED SUCCESSFULLY!");
 console.log("==================================================");

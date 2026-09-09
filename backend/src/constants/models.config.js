@@ -139,3 +139,24 @@ export function getDefaultModel() {
   );
 }
 
+/**
+ * Check whether a given model ID supports multimodal/vision (image) inputs.
+ * - qwen2.5vl:7b (and other VL/vision variants): supports images
+ * - qwen3:8b: text only
+ * - qwen2.5-coder:7b: text only
+ * - gemini-3.6-flash: multimodal cloud model
+ *
+ * @param {string} modelId
+ * @returns {boolean}
+ */
+export function isMultimodalModel(modelId) {
+  if (!modelId || typeof modelId !== "string") return false;
+  const normalized = modelId.toLowerCase().trim();
+  return (
+    normalized.includes("vl") ||
+    normalized.includes("vision") ||
+    normalized.includes("gemini")
+  );
+}
+
+

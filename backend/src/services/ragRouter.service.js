@@ -266,6 +266,42 @@ export function routeMessage({
       ? knowledgeBaseDocuments
       : (knowledgeBaseDocumentNames || []).map((name) => ({ id: null, filename: name }));
 
+  // 0. Knowledge Base Slash Command: /knowledgebase <question>
+  // Case-insensitive detection. When message starts with /knowledgebase, route directly to KB RAG.
+  const kbSlashMatch = cleanMessage.match(/^\/knowledgebase(?::|\s+|$)([\s\S]*)$/i);
+  if (kbSlashMatch) {
+    const remainingQuestion = (kbSlashMatch[1] || "").trim();
+    if (!remainingQuestion) {
+      return {
+        route: "KNOWLEDGE_BASE",
+        useRag: true,
+        reason: "kb_slash_command_empty",
+        retrievalMode: "GLOBAL",
+        targetDocumentId: null,
+        targetFilename: null,
+        cleanedQuery: "",
+        isEmptyCommand: true,
+      };
+    }
+
+    // Check if the remaining question explicitly mentions a specific KB document name
+    let detectedKbDoc = { documentId: null, filename: null };
+    if (availableKbDocs.length > 0) {
+      detectedKbDoc = detectKnowledgeBaseDocument(remainingQuestion, availableKbDocs);
+    }
+
+    return {
+      route: "KNOWLEDGE_BASE",
+      useRag: true,
+      reason: "kb_slash_command",
+      retrievalMode: detectedKbDoc.documentId ? "DOCUMENT_SPECIFIC" : "GLOBAL",
+      targetDocumentId: detectedKbDoc.documentId || null,
+      targetFilename: detectedKbDoc.filename || null,
+      cleanedQuery: remainingQuestion,
+      isEmptyCommand: false,
+    };
+  }
+
   // 1. Check if incoming message has newly attached indexable documents
   const hasIncomingDoc = (attachedFiles || []).some(
     (f) =>

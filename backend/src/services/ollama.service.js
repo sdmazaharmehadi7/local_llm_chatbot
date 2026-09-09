@@ -15,6 +15,7 @@ import {
   LOCAL_CHAT_MODELS,
   isValidModelId,
   getDefaultModel,
+  isMultimodalModel,
 } from "../constants/models.config.js";
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
@@ -313,6 +314,19 @@ export async function sendChatToOllama(messages, requestedModel = null) {
 
   const url = `${OLLAMA_BASE_URL}/api/chat`;
 
+  // Defensive sanitization: ensure text-only models never receive images field
+  const allowMultimodal = isMultimodalModel(modelToUse);
+  const sanitizedMessages = (messages || []).map((m) => {
+    const msg = {
+      role: m.role,
+      content: m.content || "",
+    };
+    if (allowMultimodal && Array.isArray(m.images) && m.images.length > 0) {
+      msg.images = m.images;
+    }
+    return msg;
+  });
+
   let response;
   try {
     response = await fetch(url, {
@@ -320,7 +334,7 @@ export async function sendChatToOllama(messages, requestedModel = null) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: modelToUse,
-        messages,
+        messages: sanitizedMessages,
         stream: false,
       }),
       signal: AbortSignal.timeout(300_000), // 5-minute timeout
@@ -363,6 +377,19 @@ export async function streamChatFromOllama(messages, signal = null, requestedMod
 
   const url = `${OLLAMA_BASE_URL}/api/chat`;
 
+  // Defensive sanitization: ensure text-only models never receive images field
+  const allowMultimodal = isMultimodalModel(modelToUse);
+  const sanitizedMessages = (messages || []).map((m) => {
+    const msg = {
+      role: m.role,
+      content: m.content || "",
+    };
+    if (allowMultimodal && Array.isArray(m.images) && m.images.length > 0) {
+      msg.images = m.images;
+    }
+    return msg;
+  });
+
   let response;
   try {
     const fetchOptions = {
@@ -370,7 +397,7 @@ export async function streamChatFromOllama(messages, signal = null, requestedMod
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: modelToUse,
-        messages,
+        messages: sanitizedMessages,
         stream: true,
       }),
     };

@@ -36,7 +36,7 @@ import {
   getInstalledModels,
 } from "../services/ollama.service.js";
 import { streamChatFromGemini } from "../services/gemini.service.js";
-import { isValidModelId, isCloudModelId } from "../constants/models.config.js";
+import { isValidModelId, isCloudModelId, isMultimodalModel } from "../constants/models.config.js";
 import {
   isIndexableDocument,
   processAndIndexDocument,
@@ -62,14 +62,21 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * Convert internal messages to Ollama format.
  * Ollama expects: [{ role, content, images?: string[] }]
+ *
+ * CRITICAL MULTIMODAL RULE:
+ * - Only models with multimodal capabilities (e.g. qwen2.5vl:7b) may receive the `images` field.
+ * - For text-only models (e.g. qwen3:8b, qwen2.5-coder:7b), the `images` field MUST be completely absent.
+ * - Textual conversation history is fully preserved.
  */
-function toOllamaMessages(messages) {
-  return messages.map(({ role, content, images }) => {
+export function toOllamaMessages(messages, targetModel = null) {
+  const allowMultimodal = isMultimodalModel(targetModel);
+
+  return (messages || []).map(({ role, content, images }) => {
     const msg = {
       role,
       content: (content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(),
     };
-    if (Array.isArray(images) && images.length > 0) {
+    if (allowMultimodal && Array.isArray(images) && images.length > 0) {
       msg.images = images;
     }
     return msg;
@@ -281,7 +288,7 @@ async function streamOllamaCompletion(
 
   res.write(sseChunk({ type: "text-start", id: "text-1" }));
 
-  const ollamaMessages = toOllamaMessages(messages);
+  const ollamaMessages = toOllamaMessages(messages, targetModel);
   let finishReason = "stop";
   let aborted = false;
   let inThinking = false;
@@ -659,9 +666,14 @@ export async function postCompletion(req, res) {
 
   // ── KNOWLEDGE BASE QUESTION PATH ─────────────────────────────────────────
   if (effectiveRoute === "KNOWLEDGE_BASE") {
+    const cleanKbQuery =
+      typeof routeDecision.cleanedQuery === "string"
+        ? routeDecision.cleanedQuery
+        : userQuery.replace(/^\/knowledgebase(?::|\s+|$)/i, "").trim();
+
     return handleKnowledgeBaseCompletion({
       res,
-      userQuery,
+      userQuery: cleanKbQuery,
       conversationContext,
       chatId,
       userId,
@@ -670,6 +682,9 @@ export async function postCompletion(req, res) {
       targetDocumentId: routeDecision.targetDocumentId,
       targetFilename: routeDecision.targetFilename,
       targetModel: "qwen3:8b",
+      isEmptyCommand:
+        routeDecision.isEmptyCommand ||
+        (/^\/knowledgebase(?::|\s+|$)/i.test(userQuery.trim()) && !cleanKbQuery),
     });
   }
 
@@ -858,7 +873,40 @@ async function handleKnowledgeBaseCompletion({
   targetDocumentId = null,
   targetFilename = null,
   targetModel = "qwen3:8b",
+  isEmptyCommand = false,
 }) {
+  // Handle empty /knowledgebase slash command: return "Please provide a question."
+  if (isEmptyCommand || !userQuery || !userQuery.trim()) {
+    beginSseStream(res);
+    const messageId = crypto.randomUUID();
+    res.write(sseChunk({ type: "start", messageId }));
+    res.write(sseChunk({ type: "start-step" }));
+    res.write(sseChunk({ type: "text-start", id: "text-1" }));
+    const emptyPromptMsg = "Please provide a question.";
+    res.write(sseChunk({ type: "text-delta", id: "text-1", delta: emptyPromptMsg }));
+    res.write(sseChunk({ type: "text-end", id: "text-1" }));
+    res.write(sseChunk({ type: "finish-step" }));
+    res.write(sseChunk({ type: "finish", finishReason: "stop" }));
+    res.write("data: [DONE]\n\n");
+    res.end();
+
+    await Message.findOneAndUpdate(
+      { _id: messageId, chatId },
+      {
+        $set: {
+          chatId,
+          role: "assistant",
+          content: emptyPromptMsg,
+          parts: [{ type: "text", text: emptyPromptMsg }],
+          model: targetModel,
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true, returnDocument: "after" }
+    ).catch(() => {});
+    return;
+  }
+
   const reachable = await isOllamaReachable();
   if (!reachable) {
     return res.status(503).json({
@@ -995,9 +1043,20 @@ async function handleKnowledgeBaseCompletion({
     );
   }
 
+  // Ensure conversation context uses clean query without /knowledgebase prefix
+  const cleanedConversationContext = (conversationContext || []).map((msg, idx) => {
+    if (idx === (conversationContext || []).length - 1 && msg.role === "user") {
+      return {
+        ...msg,
+        content: userQuery.trim(),
+      };
+    }
+    return msg;
+  });
+
   // Augment conversation context with Knowledge Base context
   const finalContext = buildAugmentedKnowledgeBaseMessages(
-    conversationContext,
+    cleanedConversationContext,
     kbResult.contextText,
     kbResult.sources
   );
