@@ -118,13 +118,21 @@ class AgentStateService {
     }
 
     const stepNumber = state.steps.length + 1;
+    const action = stepData.action || stepData.type || "tool";
+    const toolName = stepData.toolName || stepData.tool || null;
     const formattedStep = {
       stepNumber,
-      action: stepData.action || "tool",
-      toolName: stepData.toolName || null,
+      action,
+      type: action,
+      toolName,
+      tool: toolName,
       reason: stepData.reason || null,
       input: stepData.input !== undefined ? stepData.input : null,
       output: stepData.output !== undefined ? stepData.output : null,
+      observation:
+        stepData.observation !== undefined
+          ? stepData.observation
+          : (stepData.output?.result !== undefined ? stepData.output.result : stepData.output),
       status: stepData.status || "completed",
       executionTimeMs: stepData.executionTimeMs || 0,
       timestamp: new Date(),

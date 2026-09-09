@@ -19,7 +19,15 @@ const StepSchema = new mongoose.Schema(
       enum: ["tool", "final", "error", "plan"],
       required: true,
     },
+    type: {
+      type: String,
+      default: "tool",
+    },
     toolName: {
+      type: String,
+      default: null,
+    },
+    tool: {
       type: String,
       default: null,
     },
@@ -28,6 +36,10 @@ const StepSchema = new mongoose.Schema(
       default: null,
     },
     input: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+    observation: {
       type: mongoose.Schema.Types.Mixed,
       default: null,
     },

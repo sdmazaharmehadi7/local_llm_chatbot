@@ -23,6 +23,18 @@ export const retrievalTool = {
         type: "string",
         description: "The targeted semantic or keyword query to search for.",
       },
+      chatId: {
+        type: "string",
+        description: "Optional chat session ID to search chat-scoped attachments.",
+      },
+      userId: {
+        type: "string",
+        description: "Optional user ID for access-controlled resource search.",
+      },
+      workspaceId: {
+        type: "string",
+        description: "Optional workspace ID for Knowledge Base documentation search.",
+      },
       documentId: {
         type: "string",
         description: "Optional ID of a specific document to restrict search to.",
@@ -57,32 +69,53 @@ export const retrievalTool = {
   },
   permissions: ["read:documents"],
   execute: async (input, context = {}) => {
-    const { query, documentId, sourceScope = "all", limit = 8 } = input;
+    const {
+      query,
+      documentId,
+      sourceScope = "all",
+      limit = 8,
+    } = input;
 
     // Security: Caller context provided by Agent Executor takes precedence over any tool-level parameters
     const verifiedChatId = context.chatId || input.chatId || null;
     const verifiedUserId = context.userId || input.userId || null;
     const verifiedWorkspaceId = context.workspaceId || input.workspaceId || "default";
+    const effectiveDocumentId = documentId || context.documentId || null;
+    const effectiveScope = sourceScope || context.sourceScope || "all";
 
     const cappedLimit = Math.min(Math.max(1, Number(limit) || 8), 20);
 
-    const retrieverFn = typeof context.retriever === "function" ? context.retriever : executeUnifiedRetrieval;
+    const retrieverFn =
+      typeof context.retriever === "function"
+        ? context.retriever
+        : executeUnifiedRetrieval;
+
     const retrievalResult = await retrieverFn({
       query,
       chatId: verifiedChatId,
       userId: verifiedUserId,
       workspaceId: verifiedWorkspaceId,
-      documentId: documentId || null,
-      sourceScope,
+      documentId: effectiveDocumentId,
+      sourceScope: effectiveScope,
       limit: cappedLimit,
     });
 
+    const content = retrievalResult?.content || "";
+    const sources = Array.isArray(retrievalResult?.sources) ? retrievalResult.sources : [];
+    const results = Array.isArray(retrievalResult?.results) ? retrievalResult.results : [];
+
     return {
-      success: retrievalResult.success,
-      query: retrievalResult.query,
-      results: retrievalResult.results,
-      resultCount: retrievalResult.results.length,
-      ...(retrievalResult.error ? { error: retrievalResult.error } : {}),
+      success: retrievalResult?.success !== false,
+      query: retrievalResult?.query || query,
+      content,
+      sources,
+      results,
+      resultCount: results.length || sources.length,
+      hasContext:
+        retrievalResult?.hasContext !== undefined
+          ? retrievalResult.hasContext
+          : Boolean(content || results.length > 0),
+      ...(retrievalResult?.error ? { error: retrievalResult.error } : {}),
     };
   },
 };

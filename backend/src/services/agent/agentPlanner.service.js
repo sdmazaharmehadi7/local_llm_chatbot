@@ -146,7 +146,18 @@ function synthesizeFinalResponse(taskState) {
     return `Transformed text: ${result?.result ?? result}`;
   }
 
-  if (lastStep.toolName === "retrieve_information") {
+  if (lastStep.toolName === "retrieve_information" || lastStep.tool === "retrieve_information") {
+    if (result?.content && typeof result.content === "string" && result.content.trim()) {
+      let finalAnswer = `Based on verified documentation:\n\n${result.content.trim()}`;
+      if (Array.isArray(result.sources) && result.sources.length > 0) {
+        const sourceLines = result.sources.map((s) => {
+          const pagePart = s.pageText ? ` (${s.pageText})` : s.page ? ` (Page ${s.page})` : "";
+          return `- ${s.filename || "Document"}${pagePart}`;
+        });
+        finalAnswer += `\n\nSources:\n${sourceLines.join("\n")}`;
+      }
+      return finalAnswer;
+    }
     const items = result?.results || [];
     if (items.length === 0) {
       return "No relevant documents or records were found matching your inquiry.";
@@ -212,16 +223,18 @@ class AgentPlannerService {
       const lastStep = steps[steps.length - 1];
       if (lastStep.status === "completed") {
         return {
+          type: AGENT_ACTION_TYPES.FINAL,
           action: AGENT_ACTION_TYPES.FINAL,
-          reason: `Successfully executed ${lastStep.toolName} and satisfied the user request.`,
+          reason: `Successfully executed ${lastStep.toolName || lastStep.tool} and satisfied the user request.`,
           response: synthesizeFinalResponse(taskState),
         };
       }
       if (lastStep.status === "failed") {
         return {
+          type: AGENT_ACTION_TYPES.FINAL,
           action: AGENT_ACTION_TYPES.FINAL,
           reason: `Tool execution failed: ${lastStep.output?.error || "Unknown error"}.`,
-          response: `The task could not be completed because tool "${lastStep.toolName}" encountered an error: ${
+          response: `The task could not be completed because tool "${lastStep.toolName || lastStep.tool}" encountered an error: ${
             lastStep.output?.error || "Unknown failure"
           }`,
         };
@@ -235,7 +248,9 @@ class AgentPlannerService {
       const expression = extractMathExpression(userRequest);
       if (expression) {
         return {
+          type: AGENT_ACTION_TYPES.TOOL,
           action: AGENT_ACTION_TYPES.TOOL,
+          tool: "calculator",
           toolName: "calculator",
           reason: "The user requested a numerical calculation or rate computation.",
           input: { expression },
@@ -251,7 +266,9 @@ class AgentPlannerService {
       const extracted = extractTextTransform(userRequest);
       if (extracted) {
         return {
+          type: AGENT_ACTION_TYPES.TOOL,
           action: AGENT_ACTION_TYPES.TOOL,
+          tool: "text_transform",
           toolName: "text_transform",
           reason: `The user requested a deterministic "${extracted.operation}" text operation.`,
           input: extracted,
@@ -265,7 +282,9 @@ class AgentPlannerService {
       availableToolNames.has("retrieve_information")
     ) {
       return {
+        type: AGENT_ACTION_TYPES.TOOL,
         action: AGENT_ACTION_TYPES.TOOL,
+        tool: "retrieve_information",
         toolName: "retrieve_information",
         reason: "The user requested factual information from indexed organizational documents or manuals.",
         input: {
@@ -279,6 +298,7 @@ class AgentPlannerService {
 
     // 4. Default: Conclude directly without tools if task is pure conversation/greetings
     return {
+      type: AGENT_ACTION_TYPES.FINAL,
       action: AGENT_ACTION_TYPES.FINAL,
       reason: "No tool invocation required for this request.",
       response: `I have received your request: "${userRequest}". No additional tool execution is required.`,

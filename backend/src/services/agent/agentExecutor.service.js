@@ -38,7 +38,7 @@ export async function executeTool({ toolName, input = {}, context = {} }) {
     return {
       success: false,
       toolName: toolName || "unknown",
-      error: `Tool "${toolName}" is not registered or allowed.`,
+      error: `Unknown tool: tool "${toolName}" is not registered or allowed.`,
       executionTimeMs: Date.now() - startTime,
     };
   }
@@ -114,7 +114,7 @@ export async function executeTool({ toolName, input = {}, context = {} }) {
     return {
       success: false,
       toolName,
-      error: err.message || "An unexpected error occurred during tool execution.",
+      error: `Execution failure in tool "${toolName}": ${err.message || "An unexpected error occurred during tool execution."}`,
       executionTimeMs: Date.now() - startTime,
     };
   }

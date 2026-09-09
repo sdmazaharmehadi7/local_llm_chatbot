@@ -14,17 +14,69 @@ import toolRegistry from "../services/agent/toolRegistry.service.js";
  */
 export async function createAgentTask(req, res) {
   try {
-    const { message, chatId, workspaceId, options } = req.body || {};
+    const { message, chatId, workspaceId, options, stream } = req.body || {};
 
     if (!message || typeof message !== "string" || !message.trim()) {
       return res.status(400).json({
         success: false,
-        error: "Field 'message' is required and must be a non-empty string.",
+        error: "Invalid agent request. Please provide a clear task description.",
       });
     }
 
     const userId = req.userId || "user-local-admin";
+    const wantsStream =
+      stream === true ||
+      req.query?.stream === "true" ||
+      (req.headers.accept && req.headers.accept.includes("text/event-stream"));
 
+    if (wantsStream) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      if (typeof res.flushHeaders === "function") {
+        res.flushHeaders();
+      }
+
+      const sendSse = (data) => {
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify(data)}\n\n`);
+        }
+      };
+
+      try {
+        const taskResult = await runAgentTask({
+          message: message.trim(),
+          userId,
+          chatId: chatId || null,
+          workspaceId: workspaceId || "default",
+          options: {
+            ...(options || {}),
+            onProgress: (evt) => {
+              sendSse(evt);
+            },
+          },
+        });
+
+        sendSse({
+          type: "agent_result",
+          ...taskResult,
+        });
+      } catch (streamErr) {
+        sendSse({
+          type: "agent_status",
+          status: "error",
+          error: streamErr.message || "Agent execution failed.",
+        });
+      } finally {
+        if (!res.writableEnded) {
+          res.end();
+        }
+      }
+      return;
+    }
+
+    // Non-streaming response
     const taskResult = await runAgentTask({
       message: message.trim(),
       userId,

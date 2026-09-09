@@ -15,6 +15,7 @@
 import { retrieveChatContext } from "./rag.service.js";
 import { generateEmbedding } from "./embedding.service.js";
 import { searchKnowledgeBasePoints } from "./qdrant.service.js";
+import { buildKnowledgeBaseContext } from "./contextBuilder.service.js";
 
 /**
  * Execute unified retrieval across authorized document sources.
@@ -63,6 +64,9 @@ export async function executeUnifiedRetrieval({
   const shouldQueryChat = (sourceScope === "chat" || sourceScope === "all") && Boolean(chatId);
   const shouldQueryKB = sourceScope === "knowledge_base" || sourceScope === "all";
 
+  let chatContextText = "";
+  let chatSources = [];
+
   // 1. Query Chat-scoped attachments if eligible
   if (shouldQueryChat) {
     try {
@@ -75,6 +79,8 @@ export async function executeUnifiedRetrieval({
       });
 
       if (chatRes && Array.isArray(chatRes.chunks)) {
+        chatContextText = chatRes.contextText || "";
+        chatSources = chatRes.sources || [];
         for (const chunk of chatRes.chunks) {
           // If documentId filter is requested, enforce it
           if (documentId && String(chunk.documentId) !== String(documentId)) {
@@ -98,6 +104,9 @@ export async function executeUnifiedRetrieval({
   }
 
   // 2. Query Knowledge Base if eligible
+  let kbContextText = "";
+  let kbSources = [];
+
   if (shouldQueryKB) {
     try {
       const queryVector = await generateEmbedding(cleanQuery);
@@ -110,9 +119,22 @@ export async function executeUnifiedRetrieval({
         scoreThreshold,
       });
 
-      if (Array.isArray(kbMatches)) {
+      if (Array.isArray(kbMatches) && kbMatches.length > 0) {
+        // Pass through Context Builder for deduplication, bounds checking, and source attribution
+        const kbContext = buildKnowledgeBaseContext(kbMatches, {
+          targetDocumentId: documentId ? String(documentId) : null,
+          scoreThreshold,
+          maxChunks: limit,
+        });
+
+        kbContextText = kbContext.contextText || "";
+        kbSources = kbContext.sources || [];
+
         for (const match of kbMatches) {
           const p = match.payload || {};
+          if (documentId && String(p.documentId) !== String(documentId)) {
+            continue;
+          }
           normalizedResults.push({
             documentId: p.documentId || match.id || "kb-doc",
             filename: p.filename || "Knowledge Base Document",
@@ -134,11 +156,54 @@ export async function executeUnifiedRetrieval({
   normalizedResults.sort((a, b) => b.score - a.score);
   const finalResults = normalizedResults.slice(0, limit);
 
+  // 4. Assemble merged context content from Chat and Knowledge Base
+  const contextSections = [];
+  if (chatContextText && chatContextText.trim()) {
+    contextSections.push(chatContextText.trim());
+  }
+  if (kbContextText && kbContextText.trim()) {
+    contextSections.push(kbContextText.trim());
+  }
+
+  const mergedContent = contextSections.length > 0
+    ? contextSections.join("\n\n---\n\n")
+    : (finalResults.length > 0
+        ? finalResults.map((r) => `[${r.filename} - Page ${r.page}]\n${r.text}`).join("\n\n---\n\n")
+        : "");
+
+  // 5. Deduplicate sources
+  const seenSourceKeys = new Set();
+  const mergedSources = [];
+  for (const src of [...chatSources, ...kbSources]) {
+    const key = `${src.documentId || src.filename}:::${src.page || src.pageText || (src.pages ? src.pages.join(",") : "")}`;
+    if (!seenSourceKeys.has(key)) {
+      seenSourceKeys.add(key);
+      mergedSources.push(src);
+    }
+  }
+
+  if (mergedSources.length === 0 && finalResults.length > 0) {
+    for (const r of finalResults) {
+      const key = `${r.documentId || r.filename}:::${r.page}`;
+      if (!seenSourceKeys.has(key)) {
+        seenSourceKeys.add(key);
+        mergedSources.push({
+          documentId: r.documentId,
+          filename: r.filename,
+          page: r.page,
+        });
+      }
+    }
+  }
+
   return {
-    success: errors.length === 0 || finalResults.length > 0,
+    success: errors.length === 0 || finalResults.length > 0 || Boolean(mergedContent),
     query: cleanQuery,
+    content: mergedContent,
+    sources: mergedSources,
     results: finalResults,
-    ...(errors.length > 0 && finalResults.length === 0 ? { error: errors.join("; ") } : {}),
+    hasContext: Boolean(mergedContent) || finalResults.length > 0,
+    ...(errors.length > 0 && finalResults.length === 0 && !mergedContent ? { error: errors.join("; ") } : {}),
   };
 }
 

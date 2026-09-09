@@ -16,6 +16,8 @@ import agentPlannerService from "./agentPlanner.service.js";
 import { executeTool } from "./agentExecutor.service.js";
 import agentStateService from "./agentState.service.js";
 
+import Message from "../../models/Message.js";
+
 // Built-in tools
 import calculatorTool from "./tools/calculator.tool.js";
 import textTransformTool from "./tools/textTransform.tool.js";
@@ -74,6 +76,25 @@ export async function runAgentTask({
     throw new Error("Task message is required.");
   }
 
+  // Load conversation context if chatId is provided
+  let conversationHistory = [];
+  if (chatId) {
+    try {
+      if (Message && Message.db && Message.db.readyState === 1) {
+        const historyDocs = await Message.find({ chatId })
+          .sort({ createdAt: -1 })
+          .limit(10)
+          .lean();
+        conversationHistory = historyDocs.reverse().map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+      }
+    } catch (err) {
+      console.warn(`[agent.service] Notice: Could not load chat history for ${chatId}:`, err.message);
+    }
+  }
+
   // 1. Initialize task state
   const state = await agentStateService.createTaskState({
     taskId,
@@ -82,12 +103,31 @@ export async function runAgentTask({
     workspaceId,
     userRequest: message.trim(),
   });
+  state.conversationHistory = conversationHistory;
 
-  const maxSteps = options.maxSteps || AGENT_LIMITS.MAX_AGENT_STEPS;
-  const maxTools = options.maxTools || AGENT_LIMITS.MAX_TOOL_EXECUTIONS;
-  const maxTimeMs = options.maxTimeMs || AGENT_LIMITS.MAX_EXECUTION_TIME_MS;
+  const maxSteps = options.maxSteps !== undefined ? options.maxSteps : AGENT_LIMITS.MAX_AGENT_STEPS;
+  const maxTools = options.maxTools !== undefined ? options.maxTools : AGENT_LIMITS.MAX_TOOL_EXECUTIONS;
+  const maxTimeMs = options.maxTimeMs !== undefined ? options.maxTimeMs : AGENT_LIMITS.MAX_EXECUTION_TIME_MS;
+  const maxConsecutiveIdenticalActions = options.maxConsecutiveIdenticalActions || 3;
+
+  const progressEvents = [];
+  const emitProgress = (event) => {
+    const fullEvent = {
+      ...event,
+      timestamp: new Date().toISOString(),
+    };
+    progressEvents.push(fullEvent);
+    if (typeof options.onProgress === "function") {
+      try {
+        options.onProgress(fullEvent);
+      } catch (err) {
+        console.warn("[agent.service] Error in onProgress callback:", err.message);
+      }
+    }
+  };
 
   let toolExecutionCount = 0;
+  const actionHistory = [];
 
   // 2. Orchestration loop
   while (
@@ -97,8 +137,13 @@ export async function runAgentTask({
   ) {
     // Check Step Limit
     if (state.steps.length >= maxSteps) {
-      const errMsg = `Execution limit exceeded: maximum allowed steps (${maxSteps}) reached.`;
+      const errMsg = `Maximum steps reached: execution limit exceeded, maximum allowed steps (${maxSteps}) reached.`;
       await agentStateService.failTask(taskId, errMsg);
+      emitProgress({
+        type: "agent_status",
+        status: "error",
+        error: errMsg,
+      });
       break;
     }
 
@@ -106,71 +151,142 @@ export async function runAgentTask({
     if (Date.now() - startTime >= maxTimeMs) {
       const errMsg = `Execution time limit exceeded (${maxTimeMs}ms).`;
       await agentStateService.failTask(taskId, errMsg);
+      emitProgress({
+        type: "agent_status",
+        status: "error",
+        error: errMsg,
+      });
       break;
     }
 
     // Transition state to PLANNING
     await agentStateService.updateTaskStatus(taskId, AGENT_STATUS.PLANNING);
+    emitProgress({
+      type: "agent_status",
+      status: "planning",
+    });
 
     // 3. Invoke Planner to decide next structured action
     const availableTools = toolRegistry.getTools();
     const decision = await agentPlannerService.planNextStep({
       taskState: state,
       availableTools,
+      conversationHistory,
     });
 
+    const actionType = decision?.type || decision?.action;
+    const toolName = decision?.tool || decision?.toolName;
+
     // 4. Handle Decision: FINAL
-    if (decision.action === AGENT_ACTION_TYPES.FINAL) {
+    if (actionType === AGENT_ACTION_TYPES.FINAL) {
+      emitProgress({
+        type: "agent_status",
+        status: "preparing_answer",
+      });
       const finalResponse =
         decision.response || decision.reason || "Task completed successfully.";
       await agentStateService.completeTask(taskId, finalResponse);
+      emitProgress({
+        type: "agent_status",
+        status: "completed",
+      });
       break;
     }
 
     // 5. Handle Decision: ERROR
-    if (decision.action === AGENT_ACTION_TYPES.ERROR) {
+    if (actionType === AGENT_ACTION_TYPES.ERROR) {
       const errMsg = decision.reason || "Planning error occurred.";
       await agentStateService.failTask(taskId, errMsg);
+      emitProgress({
+        type: "agent_status",
+        status: "error",
+        error: errMsg,
+      });
       break;
     }
 
     // 6. Handle Decision: TOOL
-    if (decision.action === AGENT_ACTION_TYPES.TOOL) {
+    if (actionType === AGENT_ACTION_TYPES.TOOL) {
       // Check Tool Executions Limit
       if (toolExecutionCount >= maxTools) {
         const errMsg = `Execution limit exceeded: maximum allowed tool executions (${maxTools}) reached.`;
         await agentStateService.failTask(taskId, errMsg);
+        emitProgress({
+          type: "agent_status",
+          status: "error",
+          error: errMsg,
+        });
         break;
       }
+
+      // Check Repeated Identical Action (Agent Stuck Protection)
+      const actionFingerprint = `${toolName}:::${JSON.stringify(decision.input || {})}`;
+      if (actionHistory.length >= maxConsecutiveIdenticalActions) {
+        const recent = actionHistory.slice(-maxConsecutiveIdenticalActions);
+        const isStuck = recent.every((fp) => fp === actionFingerprint);
+        if (isStuck) {
+          const errMsg = `Agent stuck: detected repeated identical action for tool "${toolName}". Execution stopped safely.`;
+          await agentStateService.failTask(taskId, errMsg);
+          emitProgress({
+            type: "agent_status",
+            status: "error",
+            error: errMsg,
+          });
+          break;
+        }
+      }
+      actionHistory.push(actionFingerprint);
 
       await agentStateService.updateTaskStatus(taskId, AGENT_STATUS.EXECUTING);
       toolExecutionCount++;
 
+      emitProgress({
+        type: "agent_status",
+        status: "tool",
+        tool: toolName,
+      });
+
       // Execute selected tool via Agent Executor
       const toolResult = await executeTool({
-        toolName: decision.toolName,
+        toolName,
         input: decision.input || {},
         context: {
           taskId,
           userId,
           chatId,
           workspaceId,
+          ...(options.retriever ? { retriever: options.retriever } : {}),
+          ...(options.context || {}),
         },
       });
 
+      // Capture observation
+      const observation = toolResult.success
+        ? (toolResult.result !== undefined ? toolResult.result : null)
+        : { error: toolResult.error };
+
       // Record step in state
       await agentStateService.recordStep(taskId, {
+        type: AGENT_ACTION_TYPES.TOOL,
         action: AGENT_ACTION_TYPES.TOOL,
-        toolName: decision.toolName,
+        tool: toolName,
+        toolName: toolName,
         reason: decision.reason,
         input: decision.input,
         output: toolResult,
+        observation,
         status: toolResult.success ? "completed" : "failed",
         executionTimeMs: toolResult.executionTimeMs || 0,
       });
 
       // Record tool result
       await agentStateService.recordToolResult(taskId, toolResult);
+
+      emitProgress({
+        type: "agent_status",
+        status: "analyzing",
+        tool: toolName,
+      });
     }
   }
 
@@ -183,6 +299,7 @@ export async function runAgentTask({
     status: finalState.status,
     response: finalState.finalResponse,
     steps: finalState.steps,
+    events: progressEvents,
     executionTimeMs: totalExecutionTimeMs,
     ...(finalState.error ? { error: finalState.error } : {}),
   };
