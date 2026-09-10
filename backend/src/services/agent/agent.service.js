@@ -15,6 +15,8 @@ import toolRegistry from "./toolRegistry.service.js";
 import agentPlannerService from "./agentPlanner.service.js";
 import { executeTool } from "./agentExecutor.service.js";
 import agentStateService from "./agentState.service.js";
+import { streamChatFromOllama } from "../ollama.service.js";
+import qwenBrainService from "./qwenBrain.service.js";
 
 import Message from "../../models/Message.js";
 
@@ -96,6 +98,7 @@ export async function runAgentTask({
   }
 
   // 1. Initialize task state
+  console.log(`[agent] task started: ${taskId}`);
   const state = await agentStateService.createTaskState({
     taskId,
     userId,
@@ -164,6 +167,8 @@ export async function runAgentTask({
     emitProgress({
       type: "agent_status",
       status: "planning",
+      message: state.steps.length === 0 ? "Analysing the question..." : "Planning the response...",
+      reason: state.steps.length === 0 ? "Analysing request and identifying required tasks..." : "Evaluating next action...",
     });
 
     // 3. Invoke Planner to decide next structured action
@@ -179,16 +184,117 @@ export async function runAgentTask({
 
     // 4. Handle Decision: FINAL
     if (actionType === AGENT_ACTION_TYPES.FINAL) {
+      console.log(`[agent] brain decision: final`);
       emitProgress({
         type: "agent_status",
         status: "preparing_answer",
+        message: "Generating the response...",
+        reason: decision.reason || "Synthesizing final answer...",
       });
-      const finalResponse =
-        decision.response || decision.reason || "Task completed successfully.";
+
+      let finalResponse = "";
+      const isStreamingRequested = typeof options.onChunk === "function";
+      const isMockBrain = typeof qwenBrainService.brainLlmClient === "function";
+
+      if (isStreamingRequested && !isMockBrain) {
+        try {
+          const finalSystemPrompt = `You are Sovereign Agent, a helpful, precise, and accurate assistant. Provide a direct, well-structured final answer to the user. Base your answer on the provided tool observations or context if any. Do not repeat internal planning steps or tool names unless relevant to the answer.`;
+
+          let toolObservationSummary = "";
+          if (state.steps && state.steps.length > 0) {
+            toolObservationSummary = state.steps
+              .map((s, idx) => {
+                let obs = s.observation;
+                if (obs === undefined || obs === null) {
+                  obs = s.output?.result !== undefined ? s.output.result : s.output?.error;
+                }
+                const obsStr = typeof obs === "object" ? JSON.stringify(obs) : String(obs || "");
+                return `Tool ${idx + 1} (${s.toolName || s.tool}): ${obsStr}`;
+              })
+              .join("\n\n");
+          }
+
+          let finalUserPrompt = state.userRequest;
+          if (toolObservationSummary) {
+            finalUserPrompt = `User Request: "${state.userRequest}"\n\nTool Results:\n${toolObservationSummary}\n\nBased on the above tool results and request, provide the final answer for the user.`;
+          }
+
+          const finalMessages = [
+            { role: "system", content: finalSystemPrompt },
+            ...(conversationHistory || []).map((m) => ({ role: m.role, content: m.content })),
+            { role: "user", content: finalUserPrompt },
+          ];
+
+          const { stream: ollamaStream } = await streamChatFromOllama(
+            finalMessages,
+            options.signal || null,
+            "qwen3:8b"
+          );
+
+          const reader = ollamaStream.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (true) {
+            if (options.signal && options.signal.aborted) {
+              reader.cancel().catch(() => {});
+              break;
+            }
+
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+
+              let chunk;
+              try {
+                chunk = JSON.parse(trimmed);
+              } catch {
+                continue;
+              }
+
+              // Omit private thinking tokens
+              if (chunk?.message?.thinking) {
+                continue;
+              }
+
+              const token = chunk?.message?.content || "";
+              if (token) {
+                const cleanToken = token.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, "");
+                if (cleanToken) {
+                  finalResponse += cleanToken;
+                  options.onChunk({ text: cleanToken });
+                }
+              }
+            }
+          }
+        } catch (streamErr) {
+          console.warn("[agent.service] Notice: Streaming final answer from Ollama failed, falling back:", streamErr.message);
+          if (!finalResponse.trim()) {
+            finalResponse = decision.answer || decision.response || decision.reason || "Task completed successfully.";
+            options.onChunk({ text: finalResponse });
+          }
+        }
+      }
+
+      if (!finalResponse.trim()) {
+        finalResponse = decision.answer || decision.response || decision.reason || "Task completed successfully.";
+        if (isStreamingRequested) {
+          options.onChunk({ text: finalResponse });
+        }
+      }
+
       await agentStateService.completeTask(taskId, finalResponse);
       emitProgress({
         type: "agent_status",
         status: "completed",
+        message: "Response ready",
       });
       break;
     }
@@ -196,6 +302,7 @@ export async function runAgentTask({
     // 5. Handle Decision: ERROR
     if (actionType === AGENT_ACTION_TYPES.ERROR) {
       const errMsg = decision.reason || "Planning error occurred.";
+      console.log(`[agent] brain error: ${errMsg}`);
       await agentStateService.failTask(taskId, errMsg);
       emitProgress({
         type: "agent_status",
@@ -207,6 +314,7 @@ export async function runAgentTask({
 
     // 6. Handle Decision: TOOL
     if (actionType === AGENT_ACTION_TYPES.TOOL) {
+      console.log(`[agent] brain decision: ${toolName}`);
       // Check Tool Executions Limit
       if (toolExecutionCount >= maxTools) {
         const errMsg = `Execution limit exceeded: maximum allowed tool executions (${maxTools}) reached.`;
@@ -240,10 +348,21 @@ export async function runAgentTask({
       await agentStateService.updateTaskStatus(taskId, AGENT_STATUS.EXECUTING);
       toolExecutionCount++;
 
+      const toolActionMsg =
+        toolName === "retrieve_information"
+          ? "🔧 Searching knowledge base..."
+          : toolName === "calculator"
+          ? "🔧 Calling calculator..."
+          : toolName === "text_transform"
+          ? "🔧 Transforming text..."
+          : `🔧 Using ${toolName}...`;
+
       emitProgress({
         type: "agent_status",
         status: "tool",
         tool: toolName,
+        message: toolActionMsg,
+        reason: decision.reason || toolActionMsg,
       });
 
       // Execute selected tool via Agent Executor
@@ -281,17 +400,39 @@ export async function runAgentTask({
 
       // Record tool result
       await agentStateService.recordToolResult(taskId, toolResult);
+      console.log(`[agent] tool completed: ${toolName} (${toolResult.success ? "success" : "failed"})`);
+
+      const toolDoneMsg = toolResult.success
+        ? toolName === "retrieve_information"
+          ? "✓ Knowledge retrieved"
+          : toolName === "calculator"
+          ? "✓ Calculation completed"
+          : toolName === "text_transform"
+          ? "✓ Text transformed"
+          : "✓ Tool completed"
+        : `✗ Tool "${toolName}" failed`;
+
+      emitProgress({
+        type: "agent_status",
+        status: "tool_complete",
+        tool: toolName,
+        success: toolResult.success,
+        message: toolDoneMsg,
+      });
 
       emitProgress({
         type: "agent_status",
         status: "analyzing",
         tool: toolName,
+        message: "Analysing result...",
+        reason: `Analyzing result from ${toolName}...`,
       });
     }
   }
 
   const finalState = await agentStateService.getTaskState(taskId);
   const totalExecutionTimeMs = Date.now() - startTime;
+  console.log(`[agent] task completed: ${taskId} (${finalState.status})`);
 
   return {
     success: finalState.status === AGENT_STATUS.COMPLETED,

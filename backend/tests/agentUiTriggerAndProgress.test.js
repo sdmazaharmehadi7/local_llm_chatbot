@@ -22,11 +22,45 @@
 import assert from "assert";
 import { runAgentTask } from "../src/services/agent/agent.service.js";
 import { createAgentTask } from "../src/controllers/agent.controller.js";
+import qwenBrainService from "../src/services/agent/qwenBrain.service.js";
 
 async function runStep85TestSuite() {
   console.log("==================================================");
   console.log("STARTING STEP 8.5 AGENT UI TRIGGER & PROGRESS TESTS");
   console.log("==================================================");
+
+  // Mock Qwen3:8b brain responses for UI & progress tests
+  qwenBrainService.setBrainLlmClient(async (messages) => {
+    const userPrompt = messages[messages.length - 1].content;
+    const hasHistory = userPrompt.includes("Step 1:");
+
+    if (!hasHistory) {
+      if (userPrompt.includes("Calculate 50 * 2.5")) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "calculator",
+          input: { expression: "50 * 2.5" },
+        });
+      }
+      return JSON.stringify({
+        action: "tool",
+        tool: "retrieve_information",
+        input: { query: "Find the valve safety procedure in the manual" },
+      });
+    }
+
+    if (userPrompt.includes("[FAILED]") || userPrompt.includes('"error":')) {
+      return JSON.stringify({
+        action: "final",
+        answer: "The task could not be completed because an error occurred in the tool.",
+      });
+    }
+
+    return JSON.stringify({
+      action: "final",
+      answer: "Task completed successfully with verified information.",
+    });
+  });
 
   // -------------------------------------------------------------
   // Scenario 1: /agent Command Trigger Pattern Recognition
@@ -295,6 +329,8 @@ async function runStep85TestSuite() {
 
     console.log("✔ [PASS] Tool failure handled safely and translated into clean user-facing explanation");
   }
+
+  qwenBrainService.resetBrainLlmClient();
 
   console.log("\n==================================================");
   console.log("ALL 7 STEP 8.5 TEST SCENARIOS PASSED SUCCESSFULLY!");

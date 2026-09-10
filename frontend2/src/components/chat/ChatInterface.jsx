@@ -95,6 +95,7 @@ const ChatInterface = ({ chatId }) => {
     isLoading,
     isAgentWorking,
     agentStatus,
+    streamingAgentMessage,
     status,
     stop,
     regenerate,
@@ -187,7 +188,12 @@ const ChatInterface = ({ chatId }) => {
   useLayoutEffect(() => {
     if (!scrollContainerRef.current || !autoScroll) return;
     scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
-  }, [messages.length, autoScroll]);
+  }, [
+    messages.length,
+    autoScroll,
+    streamingAgentMessage?.content,
+    agentStatus?.events?.length,
+  ]);
 
   return (
     <div className="bg-theme-canvas relative z-0 flex h-full flex-1 flex-col">
@@ -233,6 +239,7 @@ const ChatInterface = ({ chatId }) => {
               isGeneratingImage={isGenerating}
               isAgentWorking={isAgentWorking}
               agentStatus={agentStatus}
+              streamingAgentMessage={streamingAgentMessage}
               status={status}
               onRegenerate={regenerate}
               activeModelName={currentModelData?.display_name}

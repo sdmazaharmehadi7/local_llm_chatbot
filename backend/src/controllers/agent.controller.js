@@ -38,13 +38,32 @@ export async function createAgentTask(req, res) {
         res.flushHeaders();
       }
 
-      const sendSse = (data) => {
+      let isTaskFinished = false;
+      const abortController = new AbortController();
+      if (res.on) {
+        res.on("close", () => {
+          if (!isTaskFinished && !res.writableEnded) {
+            abortController.abort();
+          }
+        });
+      }
+
+      const sendSse = (eventName, data) => {
         if (!res.writableEnded) {
-          res.write(`data: ${JSON.stringify(data)}\n\n`);
+          const payload = typeof data === "object" && data !== null
+            ? { type: eventName, ...data }
+            : { type: eventName, value: data };
+          res.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
         }
       };
 
       try {
+        // Emit initial start event
+        sendSse("agent_start", {
+          message: "Analysing your question...",
+          status: "planning",
+        });
+
         const taskResult = await runAgentTask({
           message: message.trim(),
           userId,
@@ -52,23 +71,92 @@ export async function createAgentTask(req, res) {
           workspaceId: workspaceId || "default",
           options: {
             ...(options || {}),
+            signal: abortController.signal,
             onProgress: (evt) => {
-              sendSse(evt);
+              const status = evt.status;
+              if (status === "planning") {
+                const planningMsg =
+                  evt.message && !evt.message.toLowerCase().includes("analys")
+                    ? evt.message
+                    : "Determining the required action...";
+                sendSse("reasoning", {
+                  status: "planning",
+                  message: planningMsg,
+                  reason: evt.reason || "Evaluating task...",
+                });
+              } else if (status === "tool") {
+                sendSse("tool_start", {
+                  status: "tool",
+                  tool: evt.tool,
+                  message: evt.message || `Using tool: ${evt.tool}`,
+                  reason: evt.reason,
+                });
+              } else if (status === "tool_complete") {
+                sendSse("tool_result", {
+                  status: "tool_complete",
+                  tool: evt.tool,
+                  success: evt.success,
+                  message: evt.message || "Retrieved relevant information.",
+                });
+              } else if (status === "analyzing") {
+                sendSse("reasoning", {
+                  status: "analyzing",
+                  tool: evt.tool,
+                  message: evt.message || "Evaluating the retrieved information...",
+                  reason: evt.reason,
+                });
+              } else if (status === "preparing_answer") {
+                sendSse("reasoning", {
+                  status: "preparing_answer",
+                  message: evt.message || "Generating response...",
+                  reason: evt.reason,
+                });
+              } else if (status === "completed") {
+                sendSse("reasoning", {
+                  status: "completed",
+                  message: evt.message || "Response ready",
+                });
+              } else if (status === "error") {
+                sendSse("error", {
+                  status: "error",
+                  error: evt.error,
+                  message: evt.error,
+                });
+              } else {
+                sendSse("reasoning", evt);
+              }
+            },
+            onChunk: (chunk) => {
+              if (chunk && chunk.text) {
+                sendSse("answer_chunk", {
+                  text: chunk.text,
+                });
+              }
             },
           },
         });
 
-        sendSse({
-          type: "agent_result",
+        // Conclude with agent_complete and agent_result
+        sendSse("agent_complete", {
+          message: "Completed",
+          status: "completed",
+          taskId: taskResult.taskId,
+          response: taskResult.response,
+          steps: taskResult.steps,
+          success: taskResult.success,
+        });
+
+        sendSse("agent_result", {
           ...taskResult,
         });
       } catch (streamErr) {
-        sendSse({
-          type: "agent_status",
+        sendSse("error", {
           status: "error",
           error: streamErr.message || "Agent execution failed.",
+          message: streamErr.message || "Agent execution failed.",
         });
       } finally {
+        isTaskFinished = true;
         if (!res.writableEnded) {
           res.end();
         }

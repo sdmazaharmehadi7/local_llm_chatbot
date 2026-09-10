@@ -142,28 +142,38 @@ const MessageItem = memo(({ message, onStop, onRegenerate, isStreaming = false }
             </div>
           )}
 
-          {/* Agent execution steps compact summary */}
+          {/* Collapsed agent steps summary - final answer remains primary */}
           {message.metadata?.steps?.length > 0 && (
-            <div className="border-theme-border/40 bg-theme-surface/60 mb-3 rounded-lg border p-2.5 text-xs">
-              <div className="text-theme-text-muted mb-1.5 flex items-center gap-1.5 font-semibold">
-                <span>🤖 Agent Steps</span>
-              </div>
-              <div className="space-y-1">
+            <details className="group mb-3 rounded-lg border border-theme-border/30 bg-theme-surface/40 text-xs transition-colors">
+              <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 font-medium text-theme-text-muted hover:text-theme-text select-none">
+                <span className="text-[11px] font-mono opacity-85">
+                  ⚡ Completed in {message.metadata.steps.length} {message.metadata.steps.length === 1 ? "step" : "steps"}
+                </span>
+                <ChevronDown className="ml-auto h-3.5 w-3.5 transform-gpu transition-transform group-open:rotate-180 opacity-60" />
+              </summary>
+              <div className="border-t border-theme-border/20 px-3 py-2 space-y-1.5">
                 {message.metadata.steps.map((step, idx) => (
                   <div
                     key={idx}
-                    className="bg-theme-surface/70 text-theme-text-muted flex items-center justify-between rounded px-2 py-1">
-                    <span className="text-theme-text flex items-center gap-1.5 font-medium">
-                      <span className="text-theme-green">✓</span>
-                      <span className="capitalize">{step.toolName || step.action}</span>
-                    </span>
-                    {typeof step.executionTimeMs === "number" && (
-                      <span className="text-[11px] opacity-75">{step.executionTimeMs}ms</span>
+                    className="bg-theme-surface/70 border border-theme-border/25 rounded p-2 text-xs">
+                    <div className="flex items-center justify-between text-theme-text-muted">
+                      <span className="text-theme-text flex items-center gap-1.5 font-medium">
+                        <span className="text-theme-green font-bold">✓</span>
+                        <span className="capitalize">{step.toolName || step.action}</span>
+                      </span>
+                      {typeof step.executionTimeMs === "number" && (
+                        <span className="text-[10px] font-mono opacity-75">{step.executionTimeMs}ms</span>
+                      )}
+                    </div>
+                    {step.reason && (
+                      <div className="mt-1 pl-4 border-l-2 border-theme-mauve/30 text-[11px] text-theme-text-muted italic leading-snug">
+                        💡 {step.reason}
+                      </div>
                     )}
                   </div>
                 ))}
               </div>
-            </div>
+            </details>
           )}
 
           <div className={isUser ? "max-h-[60vh] overflow-y-auto font-medium" : ""}>

@@ -307,7 +307,7 @@ async function _executeModelSwitch(targetModelId) {
  * @param {string|null} requestedModel - optional model override
  * @returns {Promise<string>}
  */
-export async function sendChatToOllama(messages, requestedModel = null) {
+export async function sendChatToOllama(messages, requestedModel = null, options = {}) {
   const modelToUse = requestedModel && isValidModelId(requestedModel)
     ? requestedModel
     : currentActiveModel;
@@ -327,17 +327,25 @@ export async function sendChatToOllama(messages, requestedModel = null) {
     return msg;
   });
 
+  const payload = {
+    model: modelToUse,
+    messages: sanitizedMessages,
+    stream: false,
+  };
+  if (options && options.format) {
+    payload.format = options.format;
+  }
+  if (options && options.options) {
+    payload.options = options.options;
+  }
+
   let response;
   try {
     response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: modelToUse,
-        messages: sanitizedMessages,
-        stream: false,
-      }),
-      signal: AbortSignal.timeout(300_000), // 5-minute timeout
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(options?.timeoutMs || 300_000), // 5-minute timeout default
     });
   } catch (err) {
     if (err.name === "TimeoutError") {

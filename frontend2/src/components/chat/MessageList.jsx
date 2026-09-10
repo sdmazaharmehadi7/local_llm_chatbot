@@ -1,4 +1,6 @@
 import MessageItem from "./MessageItem";
+import AgentLiveStatusStream from "./AgentLiveStatusStream";
+import { MarkdownContent } from "@/components/markdown/MarkdownRenderer";
 import { getMessageTimestamp } from "@/lib/messageUtils";
 import { MESSAGE_CONSTANTS } from "@/shared";
 import { ImageIcon } from "lucide-react";
@@ -65,6 +67,7 @@ const MessageList = ({
   isGeneratingImage,
   isAgentWorking,
   agentStatus,
+  streamingAgentMessage,
   status,
   onStop,
   onRegenerate,
@@ -95,67 +98,26 @@ const MessageList = ({
         );
       })}
       {isAgentWorking && (
-        <div className="flex gap-3 py-2 animate-fadeIn">
-          <div className="bg-theme-mauve/15 text-theme-mauve flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl text-base shadow-sm md:h-9 md:w-9">
+        <div className="flex gap-4 py-3 px-2 sm:px-4 animate-fadeIn">
+          {/* Normal compact assistant avatar */}
+          <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-theme-surface border border-theme-border/50 text-base shadow-xs">
             🤖
           </div>
-          <div className="bg-theme-surface/90 border-theme-border/60 max-w-md flex-1 rounded-xl border p-3.5 shadow-sm">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-sm font-semibold text-theme-text">
-                <span className="relative flex h-2 w-2">
-                  <span className="bg-theme-mauve absolute inline-flex h-full w-full animate-ping rounded-full opacity-75"></span>
-                  <span className="bg-theme-mauve relative inline-flex h-2 w-2 rounded-full"></span>
-                </span>
-                <span>🤖 Agent working</span>
-              </div>
-              <span className="text-[11px] font-medium text-theme-text-muted bg-theme-surface/80 border border-theme-border/40 rounded px-2 py-0.5">
-                {typeof agentStatus === "object"
-                  ? agentStatus?.text || "Working..."
-                  : agentStatus || "Planning..."}
-              </span>
+          {/* Normal chat response area with lightweight scrolling text stream */}
+          <div className="flex-1 min-w-0 pt-0.5">
+            <div className="mb-2">
+              <span className="text-sm font-bold text-theme-text">Sovereign Agent</span>
             </div>
-
-            {/* Completed / Current steps list if provided */}
-            {typeof agentStatus === "object" && Array.isArray(agentStatus?.steps) && agentStatus.steps.length > 0 ? (
-              <div className="mt-2.5 space-y-1 border-t border-theme-border/30 pt-2 text-xs">
-                {agentStatus.steps.map((step, idx) => {
-                  const isDone = step.status === "completed";
-                  const isRunning = step.status === "running";
-                  return (
-                    <div
-                      key={idx}
-                      className={`flex items-center justify-between rounded px-2 py-1 transition-colors ${
-                        isRunning ? "bg-theme-surface border border-theme-mauve/30 text-theme-text" : "text-theme-text-muted"
-                      }`}>
-                      <div className="flex items-center gap-2">
-                        {isDone ? (
-                          <span className="text-theme-green font-bold">✓</span>
-                        ) : isRunning ? (
-                          <span className="relative flex h-1.5 w-1.5">
-                            <span className="bg-theme-mauve absolute inline-flex h-full w-full animate-ping rounded-full opacity-75"></span>
-                            <span className="bg-theme-mauve relative inline-flex h-1.5 w-1.5 rounded-full"></span>
-                          </span>
-                        ) : (
-                          <span className="opacity-40">•</span>
-                        )}
-                        <span className={isRunning ? "font-medium text-theme-text" : ""}>
-                          {step.label}
-                        </span>
-                      </div>
-                      {isRunning && (
-                        <span className="text-[10px] text-theme-mauve animate-pulse font-medium">
-                          Active
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
+            <AgentLiveStatusStream
+              events={agentStatus?.events || []}
+              currentMessage={agentStatus?.currentMessage || agentStatus?.text || "Analysing your question..."}
+            />
+            {streamingAgentMessage?.content ? (
+              <div className="mt-3 text-theme-text leading-relaxed">
+                <MarkdownContent content={streamingAgentMessage.content} />
+                <span className="inline-block h-3.5 w-1.5 bg-theme-mauve animate-pulse ml-0.5 align-middle" />
               </div>
-            ) : (
-              <div className="mt-2 flex items-center gap-1.5 text-xs text-theme-text-muted">
-                <span>{typeof agentStatus === "string" ? agentStatus : "Planning → Executing tool → Preparing answer"}</span>
-              </div>
-            )}
+            ) : null}
           </div>
         </div>
       )}

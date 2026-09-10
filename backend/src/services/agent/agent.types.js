@@ -23,6 +23,6 @@ export const AGENT_ACTION_TYPES = Object.freeze({
 export const AGENT_LIMITS = Object.freeze({
   MAX_AGENT_STEPS: parseInt(process.env.MAX_AGENT_STEPS, 10) || 8,
   MAX_TOOL_EXECUTIONS: parseInt(process.env.MAX_TOOL_EXECUTIONS, 10) || 8,
-  MAX_EXECUTION_TIME_MS: parseInt(process.env.MAX_AGENT_EXECUTION_TIME_MS, 10) || 30000,
+  MAX_EXECUTION_TIME_MS: parseInt(process.env.MAX_AGENT_EXECUTION_TIME_MS, 10) || 180000,
   MAX_RESULT_SIZE: parseInt(process.env.MAX_AGENT_RESULT_SIZE, 10) || 100000,
 });

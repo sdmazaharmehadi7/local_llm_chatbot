@@ -10,6 +10,13 @@ function formatControlledErrorMessage(err) {
   const status = err?.status;
 
   if (
+    msg.includes("ollama is not running") ||
+    msg.includes("start ollama manually") ||
+    msg.includes("failed to communicate with qwen3")
+  ) {
+    return "Agent brain is unavailable. Please ensure Ollama is running (`ollama serve`).";
+  }
+  if (
     status === 503 ||
     status === 502 ||
     msg.includes("unreachable") ||
@@ -51,37 +58,81 @@ function formatControlledErrorMessage(err) {
 }
 
 function createStepUpdater(setAgentStatus) {
+  let eventsList = [];
   let stepsList = [];
 
   return (evt) => {
-    let currentText = "Planning...";
-    const statusType = evt.status;
+    const statusType = evt.status || evt.type;
+    const reason = evt.reason || null;
+    const messageText =
+      evt.message ||
+      (statusType === "planning" || statusType === "agent_start"
+        ? "Analysing the question..."
+        : statusType === "tool" || statusType === "tool_start"
+        ? (evt.tool === "retrieve_information"
+            ? "🔧 Searching knowledge base..."
+            : evt.tool === "calculator"
+            ? "🔧 Calling calculator..."
+            : evt.tool === "text_transform"
+            ? "🔧 Transforming text..."
+            : `🔧 Using ${evt.tool || "tool"}...`)
+        : statusType === "tool_complete" || statusType === "tool_result"
+        ? "✓ Tool completed"
+        : statusType === "analyzing"
+        ? "Analysing result..."
+        : statusType === "preparing_answer"
+        ? "Generating the response..."
+        : statusType === "completed"
+        ? "Response ready"
+        : "Working...");
 
-    if (statusType === "planning") {
-      currentText = "Planning...";
-      stepsList = [{ label: "Planning...", status: "running" }];
-    } else if (statusType === "tool") {
-      const toolLabel = evt.tool ? `Using tool: ${evt.tool}` : "Executing tool...";
-      currentText = toolLabel;
+    const isTool = statusType === "tool" || statusType === "tool_start";
+    const isComplete = statusType === "tool_complete" || statusType === "tool_result";
+
+    const trimmedMsg = messageText.trim().toLowerCase();
+    const lastEvent = eventsList[eventsList.length - 1];
+    const isDuplicate =
+      lastEvent &&
+      (lastEvent.message.trim().toLowerCase() === trimmedMsg ||
+       (trimmedMsg.startsWith("analys") && lastEvent.message.trim().toLowerCase().startsWith("analys")));
+
+    if (isDuplicate) {
+      lastEvent.status = statusType;
+      lastEvent.message = messageText;
+      if (evt.tool) lastEvent.tool = evt.tool;
+      if (reason) lastEvent.reason = reason;
+    } else {
+      eventsList.push({
+        id: `${Date.now()}-${Math.random()}`,
+        status: statusType,
+        message: messageText,
+        tool: evt.tool || null,
+        isTool,
+        isComplete,
+        reason,
+      });
+    }
+
+    if (statusType === "planning" || statusType === "agent_start") {
+      stepsList = [{ label: "Planning...", reason, status: "running" }];
+    } else if (isTool) {
       stepsList = stepsList.map((s) => ({ ...s, status: "completed" }));
-      stepsList.push({ label: toolLabel, status: "running" });
-    } else if (statusType === "analyzing") {
-      currentText = "Analyzing result...";
-      stepsList = stepsList.map((s) => ({ ...s, status: "completed" }));
-      stepsList.push({ label: "Analyzing result...", status: "running" });
+      stepsList.push({ label: messageText, tool: evt.tool, reason, status: "running" });
+    } else if (isComplete) {
+      if (stepsList.length > 0) {
+        stepsList[stepsList.length - 1].status = "completed";
+      }
     } else if (statusType === "preparing_answer") {
-      currentText = "Preparing final answer...";
-      stepsList = stepsList.map((s) => ({ ...s, status: "completed" }));
-      stepsList.push({ label: "Preparing final answer...", status: "running" });
-    } else if (statusType === "completed") {
-      currentText = "Completed";
       stepsList = stepsList.map((s) => ({ ...s, status: "completed" }));
     }
 
     setAgentStatus({
       status: statusType,
-      text: currentText,
+      text: messageText,
+      currentMessage: messageText,
       tool: evt.tool || null,
+      reason: reason,
+      events: [...eventsList],
       steps: [...stepsList],
     });
   };
@@ -92,6 +143,7 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
   const [inputFiles, setInputFiles] = useState([]);
   const [isAgentWorking, setIsAgentWorking] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
+  const [streamingAgentMessage, setStreamingAgentMessage] = useState(null);
 
   const {
     chat,
@@ -150,6 +202,9 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
       setInputFiles([]);
       stream.clearError();
 
+      const assistantMessageId = crypto.randomUUID();
+      let accumulatedAnswer = "";
+
       try {
         // Save user message immediately
         await saveUserMessage(
@@ -157,9 +212,16 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
           chatId
         );
 
+        setStreamingAgentMessage({
+          id: assistantMessageId,
+          role: "assistant",
+          model: "agent",
+          content: "",
+          createdAt: Date.now(),
+        });
         setIsAgentWorking(true);
         const updateStatus = createStepUpdater(setAgentStatus);
-        updateStatus({ status: "planning" });
+        updateStatus({ status: "planning", message: "Analysing your question..." });
 
         let agentResult = null;
         const targetUrl = API_BASE ? `${API_BASE}/api/agent/tasks` : "/api/agent/tasks";
@@ -191,26 +253,59 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = "";
+            let currentEventName = "message";
 
             while (true) {
               const { done, value } = await reader.read();
               if (done) break;
               buffer += decoder.decode(value, { stream: true });
               const lines = buffer.split("\n");
-              buffer = lines.pop();
+              buffer = lines.pop() ?? "";
 
               for (const line of lines) {
                 const trimmed = line.trim();
+                if (!trimmed) {
+                  currentEventName = "message";
+                  continue;
+                }
+                if (trimmed.startsWith("event: ")) {
+                  currentEventName = trimmed.slice(7).trim();
+                  continue;
+                }
                 if (trimmed.startsWith("data: ")) {
                   try {
                     const evt = JSON.parse(trimmed.slice(6));
-                    if (evt.type === "agent_status") {
+                    const eventType = evt.type || currentEventName;
+
+                    if (
+                      eventType === "agent_start" ||
+                      eventType === "reasoning" ||
+                      eventType === "agent_status"
+                    ) {
                       updateStatus(evt);
                       if (evt.status === "error") {
                         throw new Error(evt.error || "Agent execution failed");
                       }
-                    } else if (evt.type === "agent_result") {
+                    } else if (eventType === "tool_start" || eventType === "tool") {
+                      updateStatus({ ...evt, status: "tool" });
+                    } else if (eventType === "tool_result" || eventType === "tool_complete") {
+                      updateStatus({ ...evt, status: "tool_complete" });
+                    } else if (eventType === "answer_chunk") {
+                      const textChunk = evt.text || "";
+                      if (textChunk) {
+                        accumulatedAnswer += textChunk;
+                        setStreamingAgentMessage({
+                          id: assistantMessageId,
+                          role: "assistant",
+                          model: "agent",
+                          content: accumulatedAnswer,
+                          createdAt: Date.now(),
+                        });
+                      }
+                    } else if (eventType === "agent_complete" || eventType === "agent_result") {
                       agentResult = evt;
+                    } else if (eventType === "error") {
+                      throw new Error(evt.message || evt.error || "Agent execution failed");
                     }
                   } catch (pErr) {
                     if (pErr.message && !pErr.message.includes("JSON")) {
@@ -231,8 +326,8 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
           throw new Error(agentResult.error);
         }
 
-        const assistantMessageId = crypto.randomUUID();
         const responseText =
+          accumulatedAnswer.trim() ||
           agentResult?.response ||
           (agentResult?.success ? "Task completed." : (agentResult?.error || "Agent task completed."));
 
@@ -252,7 +347,6 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
       } catch (err) {
         console.error("[useChat] Agent execution error:", err);
         const controlledMessage = formatControlledErrorMessage(err);
-        const assistantMessageId = crypto.randomUUID();
         await saveAssistantMessage(
           {
             id: assistantMessageId,
@@ -265,6 +359,7 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
         toast.error(controlledMessage);
       } finally {
         setIsAgentWorking(false);
+        setStreamingAgentMessage(null);
         setAgentStatus(null);
       }
       return;
@@ -319,6 +414,7 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
     isLoading,
     isAgentWorking,
     agentStatus,
+    streamingAgentMessage,
     isChatError,
     error: stream.error,
     clearError: stream.clearError,

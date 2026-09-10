@@ -18,6 +18,7 @@ import toolRegistry from "../src/services/agent/toolRegistry.service.js";
 import { executeTool } from "../src/services/agent/agentExecutor.service.js";
 import agentPlannerService from "../src/services/agent/agentPlanner.service.js";
 import { executeUnifiedRetrieval } from "../src/services/unifiedRetrieval.service.js";
+import qwenBrainService from "../src/services/agent/qwenBrain.service.js";
 
 async function runStep84TestSuite() {
   console.log("==================================================");
@@ -25,6 +26,37 @@ async function runStep84TestSuite() {
   console.log("==================================================");
 
   initializeBuiltInTools();
+
+  // Mock Qwen3:8b brain responses for retrieval tests
+  qwenBrainService.setBrainLlmClient(async (messages) => {
+    const userPrompt = messages[messages.length - 1].content;
+    const hasHistory = userPrompt.includes("Step 1:");
+    if (!hasHistory) {
+      const reqMatch = userPrompt.match(/User Request: "([^"]+)"/);
+      const req = reqMatch ? reqMatch[1] : "safety";
+      return JSON.stringify({
+        action: "tool",
+        tool: "retrieve_information",
+        input: { query: req },
+      });
+    }
+    if (userPrompt.includes("45C and 65C")) {
+      return JSON.stringify({
+        action: "final",
+        answer: "Based on verified documentation:\n\nSection 1: Operating temperatures must remain between 45C and 65C.\n\nSources:\n- Cooling_Specs.pdf (Pages 10, 11)",
+      });
+    }
+    if (userPrompt.includes('"content":""') || userPrompt.includes('"results":[]')) {
+      return JSON.stringify({
+        action: "final",
+        answer: "No relevant documents or records were found matching your inquiry.",
+      });
+    }
+    return JSON.stringify({
+      action: "final",
+      answer: "Based on verified documentation:\n\nAll personnel must wear hard hats, safety goggles, and high-visibility vests before entering designated production zones.\n\nSources:\n- Company_Safety_Procedure_2026.pdf (Page 4)",
+    });
+  });
 
   // -------------------------------------------------------------
   // Scenario 1: Exact User Specification End-to-End
@@ -352,6 +384,8 @@ async function runStep84TestSuite() {
 
     console.log("✔ [PASS] Document-specific filter correctly forwarded to retrieval service");
   }
+
+  qwenBrainService.resetBrainLlmClient();
 
   console.log("\n==================================================");
   console.log("ALL 7 STEP 8.4 TEST SCENARIOS PASSED SUCCESSFULLY!");
