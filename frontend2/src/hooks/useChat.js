@@ -1,5 +1,5 @@
 import { extractTextContent } from "@/lib/messageUtils";
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import { apiFetch, API_BASE } from "@/lib/api";
 import { useChatPersistence } from "./useChatPersistence";
@@ -144,6 +144,7 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
   const [isAgentWorking, setIsAgentWorking] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
   const [streamingAgentMessage, setStreamingAgentMessage] = useState(null);
+  const agentAbortControllerRef = useRef(null);
 
   const {
     chat,
@@ -204,6 +205,8 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
 
       const assistantMessageId = crypto.randomUUID();
       let accumulatedAnswer = "";
+      const abortController = new AbortController();
+      agentAbortControllerRef.current = abortController;
 
       try {
         // Save user message immediately
@@ -234,6 +237,7 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
               Accept: "text/event-stream, application/json",
             },
             credentials: "include",
+            signal: abortController.signal,
             body: JSON.stringify({
               message: agentTask,
               chatId,
@@ -345,6 +349,23 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
           chatId
         );
       } catch (err) {
+        if (err.name === "AbortError" || abortController.signal.aborted) {
+          console.log("[useChat] Agent execution stopped by user.");
+          const responseText = accumulatedAnswer.trim()
+            ? `${accumulatedAnswer.trim()}\n\n*(Stopped by user)*`
+            : "Agent task stopped.";
+          await saveAssistantMessage(
+            {
+              id: assistantMessageId,
+              content: responseText,
+              model: "agent",
+              createdAt: Date.now(),
+            },
+            chatId
+          );
+          return;
+        }
+
         console.error("[useChat] Agent execution error:", err);
         const controlledMessage = formatControlledErrorMessage(err);
         await saveAssistantMessage(
@@ -358,6 +379,7 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
         );
         toast.error(controlledMessage);
       } finally {
+        agentAbortControllerRef.current = null;
         setIsAgentWorking(false);
         setStreamingAgentMessage(null);
         setAgentStatus(null);
@@ -401,6 +423,19 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
   const appendFiles = (files) => setInputFiles((prev) => [...prev, ...files]);
   const removeFile = (fileId) => setInputFiles((prev) => prev.filter((f) => f.id !== fileId));
 
+  const handleStop = useCallback(() => {
+    if (agentAbortControllerRef.current) {
+      agentAbortControllerRef.current.abort();
+      agentAbortControllerRef.current = null;
+    }
+    if (stream.isStreaming) {
+      stream.stop();
+    }
+    setIsAgentWorking(false);
+    setStreamingAgentMessage(null);
+    setAgentStatus(null);
+  }, [stream]);
+
   return {
     messages: stream.messages,
     input,
@@ -419,7 +454,7 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
     error: stream.error,
     clearError: stream.clearError,
     currentChat: chat,
-    stop: stream.stop,
+    stop: handleStop,
     regenerate: stream.isStreaming ? undefined : stream.regenerate,
     status: stream.status,
   };

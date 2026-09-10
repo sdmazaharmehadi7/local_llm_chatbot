@@ -105,8 +105,18 @@ const MessageList = ({
           </div>
           {/* Normal chat response area with lightweight scrolling text stream */}
           <div className="flex-1 min-w-0 pt-0.5">
-            <div className="mb-2">
+            <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-bold text-theme-text">Sovereign Agent</span>
+              {onStop && (
+                <button
+                  type="button"
+                  onClick={onStop}
+                  aria-label="Stop agent execution"
+                  title="Stop agent execution"
+                  className="border-theme-border/60 text-theme-red hover:bg-theme-red/10 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors cursor-pointer">
+                  Stop
+                </button>
+              )}
             </div>
             <AgentLiveStatusStream
               events={agentStatus?.events || []}

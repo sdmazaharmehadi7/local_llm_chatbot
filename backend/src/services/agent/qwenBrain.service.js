@@ -248,9 +248,11 @@ class QwenBrainService {
 
     return sendChatToOllama(messages, AGENT_BRAIN_MODEL, {
       format: "json",
+      think: false,
       options: {
         temperature: 0.1,
-        num_predict: 512,
+        num_predict: 2048,
+        think: false,
       },
       timeoutMs: 120_000,
     });
@@ -300,8 +302,26 @@ Decide the next action. Return ONLY a single JSON object.`;
     ];
 
     try {
-      // 1. Initial LLM generation
-      let rawOutput = await this._callLlm(messages);
+      // 1. Initial LLM generation with fallback if grammar constraint causes issue
+      let rawOutput;
+      try {
+        rawOutput = await this._callLlm(messages);
+      } catch (callErr) {
+        if (typeof this.brainLlmClient === "function") {
+          throw callErr;
+        }
+        console.warn(`[agent] Primary JSON-formatted call failed (${callErr.message}). Retrying without format constraint...`);
+        rawOutput = await sendChatToOllama(messages, AGENT_BRAIN_MODEL, {
+          think: false,
+          options: {
+            temperature: 0.1,
+            num_predict: 2048,
+            think: false,
+          },
+          timeoutMs: 120_000,
+        });
+      }
+
       let parseResult = parseBrainOutput(rawOutput);
 
       // 2. Single-turn correction retry if initial output was malformed
@@ -316,7 +336,21 @@ Decide the next action. Return ONLY a single JSON object.`;
           },
         ];
 
-        rawOutput = await this._callLlm(correctionMessages);
+        try {
+          rawOutput = await this._callLlm(correctionMessages);
+        } catch {
+          if (typeof this.brainLlmClient !== "function") {
+            rawOutput = await sendChatToOllama(correctionMessages, AGENT_BRAIN_MODEL, {
+              think: false,
+              options: {
+                temperature: 0.1,
+                num_predict: 2048,
+                think: false,
+              },
+              timeoutMs: 120_000,
+            });
+          }
+        }
         parseResult = parseBrainOutput(rawOutput);
       }
 

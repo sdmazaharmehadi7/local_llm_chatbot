@@ -241,6 +241,7 @@ const ChatInterface = ({ chatId }) => {
               agentStatus={agentStatus}
               streamingAgentMessage={streamingAgentMessage}
               status={status}
+              onStop={stop}
               onRegenerate={regenerate}
               activeModelName={currentModelData?.display_name}
             />

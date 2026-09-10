@@ -138,6 +138,20 @@ export async function runAgentTask({
     state.status !== AGENT_STATUS.FAILED &&
     state.status !== AGENT_STATUS.CANCELLED
   ) {
+    // Check if client cancelled/stopped execution
+    if (options.signal && options.signal.aborted) {
+      console.log(`[agent] task aborted by client: ${taskId}`);
+      await agentStateService.updateTaskStatus(taskId, AGENT_STATUS.CANCELLED, {
+        finalResponse: "Agent task stopped by user.",
+      });
+      emitProgress({
+        type: "agent_status",
+        status: "cancelled",
+        message: "Agent task stopped by user.",
+      });
+      break;
+    }
+
     // Check Step Limit
     if (state.steps.length >= maxSteps) {
       const errMsg = `Maximum steps reached: execution limit exceeded, maximum allowed steps (${maxSteps}) reached.`;
@@ -228,7 +242,8 @@ export async function runAgentTask({
           const { stream: ollamaStream } = await streamChatFromOllama(
             finalMessages,
             options.signal || null,
-            "qwen3:8b"
+            "qwen3:8b",
+            { think: false }
           );
 
           const reader = ollamaStream.getReader();

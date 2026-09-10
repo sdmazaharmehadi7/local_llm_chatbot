@@ -335,8 +335,14 @@ export async function sendChatToOllama(messages, requestedModel = null, options 
   if (options && options.format) {
     payload.format = options.format;
   }
+  if (options && options.think !== undefined) {
+    payload.think = options.think;
+  }
   if (options && options.options) {
-    payload.options = options.options;
+    payload.options = { ...options.options };
+    if (options.think !== undefined && payload.options.think === undefined) {
+      payload.options.think = options.think;
+    }
   }
 
   let response;
@@ -360,8 +366,26 @@ export async function sendChatToOllama(messages, requestedModel = null, options 
   }
 
   const data = await response.json();
-  const content = data?.message?.content;
+  let content = data?.message?.content || data?.response;
+
+  // If content is empty but model emitted JSON inside thinking tags
+  if (!content && data?.message?.thinking) {
+    const thinkText = data.message.thinking;
+    const firstBrace = thinkText.indexOf("{");
+    const lastBrace = thinkText.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      content = thinkText.substring(firstBrace, lastBrace + 1);
+    }
+  }
+
   if (!content) {
+    console.warn("[OLLAMA] Empty content in chat response. Response data:", JSON.stringify(data));
+    if (data?.done_reason === "length") {
+      throw new Error("Ollama model exceeded its token budget before finishing the JSON decision. Please retry with a higher token limit.");
+    }
+    if (data?.message?.thinking) {
+      throw new Error("Ollama model generated thinking tokens but produced no output content. Retrying with thinking disabled.");
+    }
     throw new Error("Ollama returned an unexpected response format.");
   }
 
@@ -378,7 +402,7 @@ export async function sendChatToOllama(messages, requestedModel = null, options 
  * @param {string|null} requestedModel - optional model override
  * @returns {Promise<{stream: ReadableStream, modelUsed: string}>}
  */
-export async function streamChatFromOllama(messages, signal = null, requestedModel = null) {
+export async function streamChatFromOllama(messages, signal = null, requestedModel = null, options = {}) {
   const modelToUse = requestedModel && isValidModelId(requestedModel)
     ? requestedModel
     : currentActiveModel;
@@ -400,14 +424,26 @@ export async function streamChatFromOllama(messages, signal = null, requestedMod
 
   let response;
   try {
+    const requestBody = {
+      model: modelToUse,
+      messages: sanitizedMessages,
+      stream: true,
+    };
+
+    if (options && options.think !== undefined) {
+      requestBody.think = options.think;
+    }
+    if (options && options.options) {
+      requestBody.options = { ...options.options };
+      if (options.think !== undefined && requestBody.options.think === undefined) {
+        requestBody.options.think = options.think;
+      }
+    }
+
     const fetchOptions = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: modelToUse,
-        messages: sanitizedMessages,
-        stream: true,
-      }),
+      body: JSON.stringify(requestBody),
     };
 
     if (signal) {
