@@ -51,6 +51,9 @@ class ToolRegistryService {
     this.tools.set(name, {
       name,
       description,
+      purpose: tool.purpose || description,
+      whenToUse: tool.whenToUse || "",
+      whenNotToUse: tool.whenNotToUse || "",
       inputSchema: inputSchema || {},
       permissions: Array.isArray(tool.permissions) ? tool.permissions : [],
       execute,
@@ -68,13 +71,16 @@ class ToolRegistryService {
 
   /**
    * Get all registered tools (metadata only, omitting executable function).
-   * @returns {Array<{name: string, description: string, inputSchema: object, permissions: string[]}>}
+   * @returns {Array<{name: string, description: string, purpose?: string, whenToUse?: string, whenNotToUse?: string, inputSchema: object, permissions: string[]}>}
    */
   getTools() {
     return Array.from(this.tools.values()).map(
-      ({ name, description, inputSchema, permissions }) => ({
+      ({ name, description, purpose, whenToUse, whenNotToUse, inputSchema, permissions }) => ({
         name,
         description,
+        purpose,
+        whenToUse,
+        whenNotToUse,
         inputSchema,
         permissions,
       })

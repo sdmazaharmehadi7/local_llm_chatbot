@@ -424,10 +424,211 @@ Hope this helps!`;
     pass("Full system regression intact (models config, registered tools, chat routers)");
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 11. TOOL SELECTION POLICY TESTS (STOP UNNECESSARY TOOL CALLS)
+  // Tests:
+  // a) Normal question → No unnecessary tool (final directly)
+  // b) Calculation → Calculator only
+  // c) Text transformation → text_transform only
+  // d) Document question → Retrieval only (calculator/text_transform stopped)
+  // e) Multi-step question → Only required tools in correct order (retrieval -> calculator)
+  // f) Tool metadata has purpose, whenToUse, and whenNotToUse
+  // ─────────────────────────────────────────────────────────────────────────────
+  console.log("\n--- [Scenario 11] Agent Tool Selection Policy & Stop Unnecessary Calls ---");
+  {
+    // A. Tool Metadata Verification
+    const tools = toolRegistry.getTools();
+    const calc = tools.find((t) => t.name === "calculator");
+    const transform = tools.find((t) => t.name === "text_transform");
+    const ret = tools.find((t) => t.name === "retrieve_information");
+
+    assert.ok(calc.purpose && calc.whenToUse && calc.whenNotToUse, "calculator must specify purpose, whenToUse, whenNotToUse");
+    assert.ok(transform.purpose && transform.whenToUse && transform.whenNotToUse, "text_transform must specify purpose, whenToUse, whenNotToUse");
+    assert.ok(ret.purpose && ret.whenToUse && ret.whenNotToUse, "retrieve_information must specify purpose, whenToUse, whenNotToUse");
+    pass("Tool metadata explicitly specifies purpose, whenToUse, and whenNotToUse");
+
+    // B. Normal Question → No Unnecessary Tool (Final Directly)
+    {
+      qwenBrainService.setBrainLlmClient(async () => {
+        return JSON.stringify({
+          action: "final",
+          answer: "Photosynthesis is the process by which plants synthesize nutrients from sunlight.",
+        });
+      });
+
+      const normalResult = await runAgentTask({
+        message: "Explain what photosynthesis is.",
+      });
+
+      assert.strictEqual(normalResult.success, true);
+      assert.strictEqual(normalResult.steps.length, 0, "Normal question must execute 0 tool steps");
+      assert.ok(normalResult.response.includes("Photosynthesis"));
+      pass("Normal question → No unnecessary tools called (final answer directly)");
+    }
+
+    // C. Calculation Question → Calculator Only
+    {
+      qwenBrainService.setBrainLlmClient(async (messages) => {
+        const userPrompt = messages[messages.length - 1].content;
+        if (!userPrompt.includes("Step 1:")) {
+          return JSON.stringify({
+            action: "tool",
+            tool: "calculator",
+            input: { expression: "(125 * 8) - 45" },
+          });
+        }
+        return JSON.stringify({
+          action: "final",
+          answer: "The result of (125 * 8) - 45 is 955.",
+        });
+      });
+
+      const calcResult = await runAgentTask({
+        message: "Calculate (125 * 8) - 45",
+      });
+
+      assert.strictEqual(calcResult.success, true);
+      assert.strictEqual(calcResult.steps.length, 1);
+      assert.strictEqual(calcResult.steps[0].toolName, "calculator");
+      assert.strictEqual(calcResult.steps[0].observation.value, 955);
+      pass("Calculation question → Calculator tool only (no retrieval, no text_transform)");
+    }
+
+    // D. Text Transformation Question → text_transform Only
+    {
+      qwenBrainService.setBrainLlmClient(async (messages) => {
+        const userPrompt = messages[messages.length - 1].content;
+        if (!userPrompt.includes("Step 1:")) {
+          return JSON.stringify({
+            action: "tool",
+            tool: "text_transform",
+            input: { operation: "uppercase", text: "safety first" },
+          });
+        }
+        return JSON.stringify({
+          action: "final",
+          answer: 'The transformed text is "SAFETY FIRST".',
+        });
+      });
+
+      const transformResult = await runAgentTask({
+        message: "Convert 'safety first' to uppercase",
+      });
+
+      assert.strictEqual(transformResult.success, true);
+      assert.strictEqual(transformResult.steps.length, 1);
+      assert.strictEqual(transformResult.steps[0].toolName, "text_transform");
+      assert.strictEqual(transformResult.steps[0].observation.result, "SAFETY FIRST");
+      pass("Text transformation question → text_transform tool only (no calculator, no retrieval)");
+    }
+
+    // E. Document Question → Retrieval Only (Stops Unnecessary Calculator or Text_transform)
+    {
+      qwenBrainService.setBrainLlmClient(async (messages) => {
+        const userPrompt = messages[messages.length - 1].content;
+
+        // In step 2 (Step 1 is already in history): return final answer
+        if (userPrompt.includes("Step 1:")) {
+          return JSON.stringify({
+            action: "final",
+            answer: "Safety requirements specify PRV inspections every 24 to 48 months with bench testing.",
+          });
+        }
+
+        // If it's a correction prompt due to policy violation, return retrieval tool
+        if (userPrompt.includes("Tool policy violation")) {
+          return JSON.stringify({
+            action: "tool",
+            tool: "retrieve_information",
+            input: { query: "safety requirements PRV CDU-2" },
+          });
+        }
+
+        // Simulate Qwen attempting to call calculator on a document question
+        return JSON.stringify({
+          action: "tool",
+          tool: "calculator",
+          input: { expression: "0" },
+        });
+      });
+
+      const docResult = await runAgentTask({
+        message: "What are the safety requirements mentioned in the documents for PRV?",
+        options: {
+          retriever: async () => ({
+            success: true,
+            content: "SOP-PRV-114 Section 2: Inspection frequency for PRV CDU-2 is 24 months for corrosive service.",
+            sources: ["SOP-PRV-114.pdf"],
+          }),
+        },
+      });
+
+      assert.strictEqual(docResult.success, true);
+      assert.strictEqual(docResult.steps.length, 1);
+      // Confirmed: policy violation caught the unnecessary calculator and routed to retrieve_information!
+      assert.strictEqual(docResult.steps[0].toolName, "retrieve_information", "Document question must use retrieve_information");
+      assert.ok(docResult.steps[0].observation.content.includes("SOP-PRV-114"));
+      pass("Document question → Unnecessary tool stopped and retrieval tool used exclusively");
+    }
+
+    // F. Multi-Step Question → Only Required Tools in Correct Sequence (retrieval -> calculator)
+    {
+      qwenBrainService.setBrainLlmClient(async (messages) => {
+        const userPrompt = messages[messages.length - 1].content;
+
+        // Step 1: Must be retrieve_information
+        if (!userPrompt.includes("Step 1:")) {
+          return JSON.stringify({
+            action: "tool",
+            tool: "retrieve_information",
+            input: { query: "blowdown limit percentage for process service valves in SOP-PRV-114" },
+          });
+        }
+
+        // Step 2: Observed blowdown limit 7%, now calculate 10 * 0.07
+        if (userPrompt.includes("Step 1:") && !userPrompt.includes("Step 2:")) {
+          assert.ok(userPrompt.includes("7%"), "Planner observed 7% blowdown limit from retrieval");
+          return JSON.stringify({
+            action: "tool",
+            tool: "calculator",
+            input: { expression: "10 * 0.07" },
+          });
+        }
+
+        // Step 3: Observed calculated value 0.7, now final
+        assert.ok(userPrompt.includes("0.7"), "Planner observed 0.7 calculated blowdown");
+        return JSON.stringify({
+          action: "final",
+          answer: "The blowdown limit in SOP-PRV-114 is 7%. For a set pressure of 10 kg/cm², the maximum blowdown is 0.7 kg/cm².",
+        });
+      });
+
+      const multiStepResult = await runAgentTask({
+        message: "According to SOP-PRV-114, what is the blowdown limit percentage for process service valves, and calculate the maximum blowdown for a valve with set pressure 10 kg/cm²?",
+        options: {
+          retriever: async () => ({
+            success: true,
+            content: "SOP-PRV-114 Section 3: Blowdown must not exceed 7% of set pressure for process service valves.",
+            sources: ["SOP-PRV-114.pdf"],
+          }),
+        },
+      });
+
+      assert.strictEqual(multiStepResult.success, true);
+      assert.strictEqual(multiStepResult.steps.length, 2, "Multi-step task must execute exactly 2 steps");
+      assert.strictEqual(multiStepResult.steps[0].toolName, "retrieve_information", "Step 1 must be retrieve_information");
+      assert.strictEqual(multiStepResult.steps[1].toolName, "calculator", "Step 2 must be calculator");
+      assert.strictEqual(multiStepResult.steps[1].observation.value, 0.7);
+      assert.ok(multiStepResult.response.includes("7%"));
+      assert.ok(multiStepResult.response.includes("0.7"));
+      pass("Multi-step question → Only required tools executed in correct sequence (retrieval -> calculator -> final)");
+    }
+  }
+
   qwenBrainService.resetBrainLlmClient();
 
   console.log("\n==================================================");
-  console.log(`ALL 10 SCENARIOS PASSED! (${testsPassed} tests passed)`);
+  console.log(`ALL 11 SCENARIOS PASSED! (${testsPassed} tests passed)`);
   console.log("ZERO OLLAMA / REAL MODEL INFERENCE WAS EXECUTED.");
   console.log("==================================================");
 }

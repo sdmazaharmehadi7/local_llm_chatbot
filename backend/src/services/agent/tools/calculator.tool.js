@@ -302,15 +302,21 @@ export function evaluateSafeExpression(expression) {
 
 export const calculatorTool = {
   name: "calculator",
+  purpose:
+    "Evaluates mathematical expressions and performs exact numerical computations (arithmetic, powers, roots, percentages, rounding).",
+  whenToUse:
+    "Use ONLY when the user question or previous task step explicitly requires mathematical computation, arithmetic expression evaluation, or calculating numbers derived from retrieved data.",
+  whenNotToUse:
+    "Do NOT use for general questions, text analysis, document lookups, definitions, or non-mathematical tasks. Never call calculator if there are no mathematical expressions or numbers to calculate.",
   description:
-    "Safely evaluates mathematical expressions and calculations without arbitrary code execution. Supports +, -, *, /, %, ^, parentheses, sqrt, abs, round, floor, ceil, min, max, pow.",
+    "Evaluates mathematical expressions and performs exact numerical computations. Use ONLY when arithmetic or numerical calculation is explicitly required. Do NOT use for general questions, text processing, or document lookups.",
   inputSchema: {
     type: "object",
     required: ["expression"],
     properties: {
       expression: {
         type: "string",
-        description: "The mathematical expression to evaluate (e.g. '25 * 0.17' or 'sqrt(144) + 10')",
+        description: "The mathematical expression to evaluate (e.g. '25 * 0.17', '10 * 0.07', or 'sqrt(144) + 10')",
       },
     },
   },

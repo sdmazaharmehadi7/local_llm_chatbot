@@ -22,8 +22,8 @@ export const AGENT_BRAIN_SYSTEM_PROMPT = `You are the decision-making brain of a
 You do not execute tools yourself.
 You can only request tools from the provided tool registry.
 Return exactly one structured JSON action.
-Choose a tool when an action is required.
-Return final when the task is complete.
+Choose a tool ONLY when strictly necessary.
+Return final when the task is complete or can be answered directly.
 Never invent tools.
 Never output hidden reasoning.
 
@@ -42,6 +42,14 @@ If task is complete or can be answered directly without tools:
   "reason": "<short 1-sentence summary of reasoning>",
   "answer": "<final answer for user>"
 }
+
+Strict Agent Tool Selection Policy:
+1. MINIMAL TOOL USAGE: Use the minimum number of tools strictly necessary. If a question can be answered using general knowledge, conversational response, or already observed context, return "final" immediately without calling any tools.
+2. NO UNRELATED TOOL CALLS: Do not call a tool simply because it is available. Never call calculator or text_transform on questions that do not specifically require them.
+3. RETRIEVAL POLICY: Call "retrieve_information" when the user asks about specific documents, files, manuals, SOPs, policies, procedures, regulations, safety requirements, or domain facts that must be looked up.
+4. CALCULATOR POLICY: Call "calculator" ONLY when explicit mathematical computation or arithmetic evaluation is required (e.g. +, -, *, /, %, equations, formulas, or computing numbers from retrieved data). Do NOT call calculator for non-mathematical, text, or document questions.
+5. TEXT TRANSFORM POLICY: Call "text_transform" ONLY when the user explicitly requests text formatting or manipulation (e.g. uppercase, lowercase, word count, character count, reverse, trim). Do NOT call text_transform to answer questions or process queries.
+6. MULTI-STEP ORDER: When a request requires both document information and mathematical calculation, FIRST retrieve the necessary data using "retrieve_information", observe the result, and THEN call "calculator" on the retrieved numbers. Never invert this order.
 
 Strict Constraints:
 1. Return ONLY the raw JSON object. Never include markdown code fences, comments, or thinking tags.
@@ -66,10 +74,21 @@ export function formatAvailableTools(tools = []) {
       const schema = t.inputSchema || t.schema || {};
       const props = schema.properties || {};
       const req = schema.required || [];
-      return `- Tool: "${t.name}"
-  Description: ${t.description || "No description provided."}
-  Parameters: ${JSON.stringify(props)}
-  Required: ${JSON.stringify(req)}`;
+      const lines = [`- Tool: "${t.name}"`];
+      if (t.purpose) {
+        lines.push(`  Purpose: ${t.purpose}`);
+      } else if (t.description) {
+        lines.push(`  Purpose: ${t.description}`);
+      }
+      if (t.whenToUse) {
+        lines.push(`  When to Use: ${t.whenToUse}`);
+      }
+      if (t.whenNotToUse) {
+        lines.push(`  When NOT to Use: ${t.whenNotToUse}`);
+      }
+      lines.push(`  Parameters: ${JSON.stringify(props)}`);
+      lines.push(`  Required: ${JSON.stringify(req)}`);
+      return lines.join("\n");
     })
     .join("\n\n");
 }
@@ -213,6 +232,79 @@ export function parseBrainOutput(rawOutput) {
   }
 
   return { valid: false, error: "Unrecognized response format.", raw: rawOutput };
+}
+
+/**
+ * Validate that a proposed tool decision complies with the Agent Tool Selection Policy.
+ * Prevents unnecessary tool calls (e.g. calculator or text_transform on document questions).
+ *
+ * @param {object} decision - Proposed decision { action, tool, input, ... }
+ * @param {object} taskState - Current task state including userRequest and steps
+ * @returns {{ valid: boolean, reason?: string }}
+ */
+export function validateToolSelectionPolicy(decision, taskState = {}) {
+  if (!decision || decision.action !== AGENT_ACTION_TYPES.TOOL) {
+    return { valid: true };
+  }
+
+  const toolName = decision.tool || decision.toolName;
+  const userRequest = (taskState.userRequest || "").trim();
+  const steps = taskState.steps || [];
+
+  const isDocumentQuestion =
+    /\b(document|documents|file|files|pdf|sop|manual|manuals|policy|policies|procedure|procedures|regulation|regulations|safety requirement|safety requirements|prv|cdu|crude distillation|valve|inspection interval|acceptance criteria)\b/i.test(
+      userRequest
+    );
+
+  // 1. DOCUMENT / RETRIEVAL POLICY:
+  // For queries asking about documents, files, SOPs, manuals, policies, or safety requirements:
+  // retrieve_information must be called first; unrelated tools (calculator or text_transform) must not precede retrieval.
+  if (steps.length === 0 && isDocumentQuestion && (toolName === "calculator" || toolName === "text_transform")) {
+    return {
+      valid: false,
+      reason: `For document queries, retrieve_information must be used first to gather context before calling other tools.`,
+    };
+  }
+
+  // 2. TEXT TRANSFORM POLICY:
+  // Do not call text_transform unless user explicitly requested text formatting or manipulation
+  if (toolName === "text_transform") {
+    const hasExplicitTransformRequest =
+      /\b(uppercase|upper case|lowercase|lower case|capital|all caps|capitalize|word count|count words|character count|char count|count characters|reverse text|reverse string|reverse the|trim whitespace|trim text)\b/i.test(
+        userRequest
+      );
+
+    if (!hasExplicitTransformRequest) {
+      return {
+        valid: false,
+        reason: `text_transform cannot be called because the user did not explicitly request text formatting or transformation.`,
+      };
+    }
+  }
+
+  // 3. CALCULATOR POLICY:
+  // Do not call calculator unless arithmetic computation is required
+  if (toolName === "calculator") {
+    const hasMathInRequest =
+      /(\d+\s*[\+\-\*\/\^%]\s*\d+)|(\b(calculate|computation|compute|math|sum|difference|multiply|multiplication|divide|division|arithmetic|percentage|percent|formula|equation|sqrt|blowdown|tolerance|deviation|calc|count|increment)\b)/i.test(
+        userRequest
+      );
+
+    const hasMathInInput =
+      typeof decision.input?.expression === "string" &&
+      /(\d+\s*[\+\-\*\/\^%]\s*\d+)|(sqrt|abs|round|floor|ceil|min|max|pow)/i.test(decision.input.expression);
+
+    const hasMathFromObservation = steps.length > 0;
+
+    if (!hasMathInRequest && !hasMathInInput && !hasMathFromObservation) {
+      return {
+        valid: false,
+        reason: `Calculator cannot be called because the request does not require mathematical calculation.`,
+      };
+    }
+  }
+
+  return { valid: true };
 }
 
 class QwenBrainService {
@@ -362,7 +454,77 @@ Decide the next action. Return ONLY a single JSON object.`;
         };
       }
 
-      const decision = parseResult.decision;
+      let decision = parseResult.decision;
+
+      // 3. Enforce Agent Tool Selection Policy (prevent unnecessary tool calls)
+      const policyCheck = validateToolSelectionPolicy(decision, taskState);
+      if (!policyCheck.valid) {
+        console.warn(`[agent] Tool policy violation (${policyCheck.reason}). Retrying with policy correction prompt...`);
+        const policyMessages = [
+          ...messages,
+          { role: "assistant", content: rawOutput || "" },
+          {
+            role: "user",
+            content: `Error: Tool policy violation - ${policyCheck.reason}. As per Agent Tool Selection Policy:
+1. Use the minimum number of tools strictly necessary.
+2. Do not call calculator unless arithmetic is required.
+3. Do not call text_transform unless user explicitly requested text transformation.
+4. Use retrieve_information when document knowledge or external facts are needed.
+5. If no tool is needed, return final directly.
+Please return ONLY the correct valid JSON action.`,
+          },
+        ];
+
+        try {
+          rawOutput = await this._callLlm(policyMessages);
+        } catch {
+          if (typeof this.brainLlmClient !== "function") {
+            rawOutput = await sendChatToOllama(policyMessages, AGENT_BRAIN_MODEL, {
+              think: false,
+              options: {
+                temperature: 0.1,
+                num_predict: 2048,
+                think: false,
+              },
+              timeoutMs: 120_000,
+            });
+          }
+        }
+
+        const repairedResult = parseBrainOutput(rawOutput);
+        if (repairedResult.valid) {
+          const repairedPolicy = validateToolSelectionPolicy(repairedResult.decision, taskState);
+          if (repairedPolicy.valid) {
+            decision = repairedResult.decision;
+          }
+        }
+
+        // Safe fallback if model still failed policy validation after retry:
+        const finalPolicyCheck = validateToolSelectionPolicy(decision, taskState);
+        if (!finalPolicyCheck.valid) {
+          const isDocQuestion = /\b(document|documents|file|files|pdf|sop|manual|manuals|policy|policies|procedure|procedures|regulation|regulations|safety requirement|safety requirements|prv|cdu|crude distillation|valve)\b/i.test(userRequest);
+          if (isDocQuestion && steps.length === 0) {
+            console.warn(`[agent] Overriding policy-violating tool with retrieve_information for document question.`);
+            decision = {
+              action: AGENT_ACTION_TYPES.TOOL,
+              type: AGENT_ACTION_TYPES.TOOL,
+              tool: "retrieve_information",
+              toolName: "retrieve_information",
+              input: { query: userRequest },
+              reason: `Retrieving relevant document context for: "${userRequest}".`,
+            };
+          } else if (decision.tool === "calculator" || decision.tool === "text_transform") {
+            console.warn(`[agent] Overriding unnecessary tool call with final action.`);
+            decision = {
+              action: AGENT_ACTION_TYPES.FINAL,
+              type: AGENT_ACTION_TYPES.FINAL,
+              answer: `I am ready to assist with your question: "${userRequest}".`,
+              response: `I am ready to assist with your question: "${userRequest}".`,
+              reason: `No tools required for this request.`,
+            };
+          }
+        }
+      }
 
       // Ensure caller context identifiers from taskState are securely attached to retrieve_information
       if (decision.action === AGENT_ACTION_TYPES.TOOL && decision.tool === "retrieve_information" && taskState) {

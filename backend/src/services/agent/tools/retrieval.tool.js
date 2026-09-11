@@ -13,8 +13,14 @@ import { executeUnifiedRetrieval } from "../../unifiedRetrieval.service.js";
 
 export const retrievalTool = {
   name: "retrieve_information",
+  purpose:
+    "Searches and retrieves verified facts, specifications, standard operating procedures (SOPs), manuals, policies, guidelines, and document excerpts from authorized chat attachments and Knowledge Base documentation.",
+  whenToUse:
+    "Use when the user asks questions about documents, files, manuals, SOPs, company/system procedures, policies, regulations, safety requirements, technical specifications, or domain-specific facts requiring external context.",
+  whenNotToUse:
+    "Do NOT use for pure mathematical calculations (use calculator instead), explicit string formatting (use text_transform instead), or generic conversational chit-chat that needs no factual lookup.",
   description:
-    "Retrieves relevant information, verified facts, and document excerpts from authorized chat attachments and sovereign Knowledge Base documentation.",
+    "Searches and retrieves verified facts, policies, SOPs, manuals, and document excerpts from authorized attachments and Knowledge Base. Use when external or document knowledge is needed. Do NOT use for pure math or text transformations.",
   inputSchema: {
     type: "object",
     required: ["query"],

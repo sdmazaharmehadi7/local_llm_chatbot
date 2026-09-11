@@ -47,8 +47,14 @@ function deterministicSummarize(text, maxSentences = 3) {
 
 export const textTransformTool = {
   name: "text_transform",
+  purpose:
+    "Performs deterministic string formatting transformations on text (uppercase, lowercase, word count, character count, extractive summarization, trimming, reversing).",
+  whenToUse:
+    "Use ONLY when the user explicitly requests text formatting or manipulation (e.g. 'convert to uppercase', 'make lowercase', 'reverse this string', 'count the words in this text').",
+  whenNotToUse:
+    "Do NOT use for answering general questions, searching documents, factual lookups, reasoning, or math. Do NOT use unless the user explicitly requested a specific string transformation operation.",
   description:
-    "Performs deterministic transformations and analysis on text (uppercase, lowercase, word_count, char_count, summarize, trim, reverse) without using an LLM.",
+    "Performs deterministic string formatting transformations (uppercase, lowercase, word_count, char_count, summarize, trim, reverse). Use ONLY when the user explicitly requests text formatting or manipulation. Do NOT use for answering questions or document queries.",
   inputSchema: {
     type: "object",
     required: ["text", "operation"],
