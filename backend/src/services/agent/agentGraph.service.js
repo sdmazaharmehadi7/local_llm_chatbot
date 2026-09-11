@@ -1,12 +1,12 @@
 /**
- * Framework Graph Service (LangGraph StateGraph)
+ * Sovereign Agent Graph Service (LangGraph StateGraph Engine)
  *
- * Implements the experimental Agent orchestration layer using LangGraph JS.
+ * Primary and sole agent orchestration engine for the Sovereign AI Workbench.
  *
- * GUARANTEES & PRINCIPLES:
+ * GUARANTEES:
  * - Powered by LangGraph StateGraph (Annotation.Root, nodes, edges, cycle control).
  * - Connected directly to local Qwen3:8b via local Ollama (http://localhost:11434).
- * - Zero external dependencies, cloud models, or external telemetry.
+ * - Zero external dependencies, cloud models, or external telemetry (LANGCHAIN_TRACING_V2=false).
  * - Enforces minimum-tool policy and strict tool selection rules.
  * - Step limits, execution limits, and stuck loop protection.
  * - Emits real-time progress events for UI compatibility.
@@ -14,19 +14,19 @@
 
 import { StateGraph, Annotation, START, END } from "@langchain/langgraph";
 import {
-  FRAMEWORK_AGENT_STATUS,
-  FRAMEWORK_ACTION_TYPES,
-  FRAMEWORK_AGENT_LIMITS,
-} from "./frameworkAgent.types.js";
-import { createFrameworkTools } from "./frameworkTools.js";
-import { sendChatToOllama } from "../../ollama.service.js";
+  AGENT_STATUS,
+  AGENT_ACTION_TYPES,
+  AGENT_LIMITS,
+} from "./agent.types.js";
+import { createAgentTools } from "./agentTools.js";
+import { sendChatToOllama } from "../ollama.service.js";
 import {
   parseBrainOutput,
   validateToolSelectionPolicy,
   formatAvailableTools,
   formatStepHistory,
   AGENT_BRAIN_SYSTEM_PROMPT,
-} from "../qwenBrain.service.js";
+} from "./qwenBrain.service.js";
 
 // Disable LangChain tracing/telemetry globally
 if (typeof process !== "undefined" && process.env) {
@@ -36,7 +36,7 @@ if (typeof process !== "undefined" && process.env) {
 /**
  * LangGraph State Annotation Schema
  */
-export const FrameworkStateAnnotation = Annotation.Root({
+export const AgentStateAnnotation = Annotation.Root({
   taskId: Annotation({ reducer: (_, y) => y, default: () => "" }),
   userId: Annotation({ reducer: (_, y) => y, default: () => "user-local-admin" }),
   chatId: Annotation({ reducer: (_, y) => y, default: () => null }),
@@ -45,22 +45,22 @@ export const FrameworkStateAnnotation = Annotation.Root({
   conversationHistory: Annotation({ reducer: (_, y) => y, default: () => [] }),
   steps: Annotation({ reducer: (x, y) => x.concat(y), default: () => [] }),
   toolExecutionCount: Annotation({ reducer: (_, y) => y, default: () => 0 }),
-  status: Annotation({ reducer: (_, y) => y, default: () => FRAMEWORK_AGENT_STATUS.PLANNING }),
+  status: Annotation({ reducer: (_, y) => y, default: () => AGENT_STATUS.PLANNING }),
   currentAction: Annotation({ reducer: (_, y) => y, default: () => null }),
   finalResponse: Annotation({ reducer: (_, y) => y, default: () => "" }),
   error: Annotation({ reducer: (_, y) => y, default: () => null }),
 });
 
-class FrameworkGraphService {
+class AgentGraphService {
   constructor() {
     this.brainLlmClient = null; // Testing hook for offline mock inference
   }
 
-  setFrameworkBrainLlmClient(clientFn) {
+  setAgentBrainLlmClient(clientFn) {
     this.brainLlmClient = clientFn;
   }
 
-  resetFrameworkBrainLlmClient() {
+  resetAgentBrainLlmClient() {
     this.brainLlmClient = null;
   }
 
@@ -110,25 +110,23 @@ class FrameworkGraphService {
      * LangGraph Reasoner Node
      */
     const reasonerNode = async (state) => {
-      // Check abort signal
       if (signal && signal.aborted) {
         emit({
           status: "cancelled",
           message: "Agent task stopped by user.",
         });
         return {
-          status: FRAMEWORK_AGENT_STATUS.CANCELLED,
+          status: AGENT_STATUS.CANCELLED,
           finalResponse: "Agent task stopped by user.",
           currentAction: { action: "final", answer: "Agent task stopped by user." },
         };
       }
 
-      // Check graph steps limit
-      if (state.steps.length >= FRAMEWORK_AGENT_LIMITS.MAX_GRAPH_STEPS) {
-        const errMsg = `Maximum steps reached: LangGraph execution limit exceeded (${FRAMEWORK_AGENT_LIMITS.MAX_GRAPH_STEPS} steps).`;
+      if (state.steps.length >= AGENT_LIMITS.MAX_AGENT_STEPS) {
+        const errMsg = `Maximum steps reached: LangGraph execution limit exceeded (${AGENT_LIMITS.MAX_AGENT_STEPS} steps).`;
         emit({ status: "error", error: errMsg });
         return {
-          status: FRAMEWORK_AGENT_STATUS.FAILED,
+          status: AGENT_STATUS.FAILED,
           error: errMsg,
           currentAction: { action: "error", reason: errMsg },
         };
@@ -136,12 +134,11 @@ class FrameworkGraphService {
 
       emit({
         status: "planning",
-        message: state.steps.length === 0 ? "Analysing your question with LangGraph..." : "Planning next step...",
+        message: state.steps.length === 0 ? "Analysing your question..." : "Planning next step...",
         reason: "Evaluating required actions...",
       });
 
-      // Context-bound tools
-      const frameworkTools = createFrameworkTools({
+      const tools = createAgentTools({
         userId: state.userId,
         chatId: state.chatId,
         workspaceId: state.workspaceId,
@@ -149,7 +146,7 @@ class FrameworkGraphService {
       });
 
       const formattedTools = formatAvailableTools(
-        frameworkTools.map((t) => {
+        tools.map((t) => {
           const shape =
             t.schema?.shape ||
             (typeof t.schema?._def?.shape === "function" ? t.schema._def.shape() : t.schema?._def?.shape) ||
@@ -168,7 +165,6 @@ class FrameworkGraphService {
         })
       );
 
-
       const formattedHistory = formatStepHistory(state.steps);
 
       const promptContent = `User Request: "${state.userRequest}"
@@ -179,7 +175,7 @@ ${formattedTools}
 Previous Execution Steps & Observations:
 ${formattedHistory}
 
-Current Step: ${state.steps.length + 1} of ${FRAMEWORK_AGENT_LIMITS.MAX_GRAPH_STEPS}
+Current Step: ${state.steps.length + 1} of ${AGENT_LIMITS.MAX_AGENT_STEPS}
 
 Decide the next action now. Remember the strict tool selection rules:
 - Minimal tool usage: return "final" if answerable directly.
@@ -203,7 +199,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         const errMsg = `Brain inference error: ${llmErr.message}`;
         emit({ status: "error", error: errMsg });
         return {
-          status: FRAMEWORK_AGENT_STATUS.FAILED,
+          status: AGENT_STATUS.FAILED,
           error: errMsg,
           currentAction: { action: "error", reason: errMsg },
         };
@@ -225,7 +221,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           const retryOutput = await this._callBrainLlm(retryMessages);
           parsed = parseBrainOutput(retryOutput);
         } catch {
-          // retry failed, use original parsed error
+          // retry failed, use original error
         }
       }
 
@@ -233,7 +229,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         const errMsg = `Brain output invalid: ${parsed.error}`;
         emit({ status: "error", error: errMsg });
         return {
-          status: FRAMEWORK_AGENT_STATUS.FAILED,
+          status: AGENT_STATUS.FAILED,
           error: errMsg,
           currentAction: { action: "error", reason: errMsg },
         };
@@ -241,18 +237,17 @@ Return ONLY a valid JSON object matching the Response Schema.`;
 
       const decision = parsed.decision;
 
-      // Validate tool selection policy (rules against unnecessary calculator/retrieval/transform)
+      // Validate tool selection policy against unneeded tool calls
       const policyValidation = validateToolSelectionPolicy(decision, {
         userRequest: state.userRequest,
         steps: state.steps,
       });
 
       if (!policyValidation.valid) {
-        console.warn(`[frameworkGraph] Tool selection policy rejection: ${policyValidation.reason}`);
-        // Safely redirect to final answer instead of running unneeded tool
+        console.warn(`[agentGraph] Tool selection policy rejection: ${policyValidation.reason}`);
         const safeFinalAction = {
-          action: FRAMEWORK_ACTION_TYPES.FINAL,
-          type: FRAMEWORK_ACTION_TYPES.FINAL,
+          action: AGENT_ACTION_TYPES.FINAL,
+          type: AGENT_ACTION_TYPES.FINAL,
           answer: decision.answer || `Cannot execute tool: ${policyValidation.reason}`,
           reason: policyValidation.reason,
         };
@@ -262,29 +257,27 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           reason: policyValidation.reason,
         });
         return {
-          status: FRAMEWORK_AGENT_STATUS.COMPLETED,
+          status: AGENT_STATUS.COMPLETED,
           finalResponse: safeFinalAction.answer,
           currentAction: safeFinalAction,
         };
       }
 
-      // If final action
-      if (decision.action === FRAMEWORK_ACTION_TYPES.FINAL) {
+      if (decision.action === AGENT_ACTION_TYPES.FINAL) {
         emit({
           status: "preparing_answer",
           message: "Generating response...",
           reason: decision.reason || "Synthesizing final answer...",
         });
         return {
-          status: FRAMEWORK_AGENT_STATUS.COMPLETED,
+          status: AGENT_STATUS.COMPLETED,
           finalResponse: decision.answer || decision.response || "Task completed.",
           currentAction: decision,
         };
       }
 
-      // If tool action
       return {
-        status: FRAMEWORK_AGENT_STATUS.EXECUTING,
+        status: AGENT_STATUS.EXECUTING,
         currentAction: decision,
       };
     };
@@ -296,12 +289,11 @@ Return ONLY a valid JSON object matching the Response Schema.`;
       const decision = state.currentAction;
       const toolName = decision?.tool || decision?.toolName;
 
-      // Tool execution limit check
-      if (state.toolExecutionCount >= FRAMEWORK_AGENT_LIMITS.MAX_TOOL_EXECUTIONS) {
-        const errMsg = `Execution limit exceeded: maximum allowed tool executions (${FRAMEWORK_AGENT_LIMITS.MAX_TOOL_EXECUTIONS}) reached.`;
+      if (state.toolExecutionCount >= AGENT_LIMITS.MAX_TOOL_EXECUTIONS) {
+        const errMsg = `Execution limit exceeded: maximum allowed tool executions (${AGENT_LIMITS.MAX_TOOL_EXECUTIONS}) reached.`;
         emit({ status: "error", error: errMsg });
         return {
-          status: FRAMEWORK_AGENT_STATUS.FAILED,
+          status: AGENT_STATUS.FAILED,
           error: errMsg,
           currentAction: { action: "error", reason: errMsg },
         };
@@ -309,9 +301,9 @@ Return ONLY a valid JSON object matching the Response Schema.`;
 
       // Check stuck loop protection (consecutive identical tool calls)
       const actionFingerprint = `${toolName}:::${JSON.stringify(decision.input || {})}`;
-      const recentSteps = state.steps.slice(-FRAMEWORK_AGENT_LIMITS.MAX_CONSECUTIVE_IDENTICAL_ACTIONS);
+      const recentSteps = state.steps.slice(-AGENT_LIMITS.MAX_CONSECUTIVE_IDENTICAL_ACTIONS);
       if (
-        recentSteps.length >= FRAMEWORK_AGENT_LIMITS.MAX_CONSECUTIVE_IDENTICAL_ACTIONS &&
+        recentSteps.length >= AGENT_LIMITS.MAX_CONSECUTIVE_IDENTICAL_ACTIONS &&
         recentSteps.every(
           (s) => `${s.tool}:::${JSON.stringify(s.input || {})}` === actionFingerprint
         )
@@ -319,7 +311,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         const errMsg = `Agent stuck: detected repeated identical action for tool "${toolName}". Execution stopped safely.`;
         emit({ status: "error", error: errMsg });
         return {
-          status: FRAMEWORK_AGENT_STATUS.FAILED,
+          status: AGENT_STATUS.FAILED,
           error: errMsg,
           currentAction: { action: "error", reason: errMsg },
         };
@@ -341,19 +333,19 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         reason: decision.reason || toolActionMsg,
       });
 
-      const frameworkTools = createFrameworkTools({
+      const tools = createAgentTools({
         userId: state.userId,
         chatId: state.chatId,
         workspaceId: state.workspaceId,
         retriever,
       });
 
-      const matchedTool = frameworkTools.find((t) => t.name === toolName);
+      const matchedTool = tools.find((t) => t.name === toolName);
       const startTime = Date.now();
       let stepRecord;
 
       if (!matchedTool) {
-        const errMsg = `Unknown tool: "${toolName}" is not registered in the framework catalog.`;
+        const errMsg = `Unknown tool: "${toolName}" is not registered in the catalog.`;
         emit({
           status: "tool_complete",
           tool: toolName,
@@ -446,33 +438,32 @@ Return ONLY a valid JSON object matching the Response Schema.`;
       return {
         steps: [stepRecord],
         toolExecutionCount: state.toolExecutionCount + 1,
-        status: FRAMEWORK_AGENT_STATUS.PLANNING,
+        status: AGENT_STATUS.PLANNING,
       };
     };
 
     /**
-     * LangGraph Conditional Routing Function
+     * LangGraph Conditional Edge
      */
     const shouldContinue = (state) => {
       if (
-        state.status === FRAMEWORK_AGENT_STATUS.COMPLETED ||
-        state.status === FRAMEWORK_AGENT_STATUS.FAILED ||
-        state.status === FRAMEWORK_AGENT_STATUS.CANCELLED ||
+        state.status === AGENT_STATUS.COMPLETED ||
+        state.status === AGENT_STATUS.FAILED ||
+        state.status === AGENT_STATUS.CANCELLED ||
         state.error
       ) {
         return "end";
       }
 
       const action = state.currentAction?.action;
-      if (action === FRAMEWORK_ACTION_TYPES.TOOL) {
+      if (action === AGENT_ACTION_TYPES.TOOL) {
         return "tools";
       }
 
       return "end";
     };
 
-    // Construct the LangGraph StateGraph
-    const workflow = new StateGraph(FrameworkStateAnnotation)
+    const workflow = new StateGraph(AgentStateAnnotation)
       .addNode("reasoner", reasonerNode)
       .addNode("tools", toolsNode)
       .addEdge(START, "reasoner")
@@ -486,5 +477,5 @@ Return ONLY a valid JSON object matching the Response Schema.`;
   }
 }
 
-export const frameworkGraphService = new FrameworkGraphService();
-export default frameworkGraphService;
+export const agentGraphService = new AgentGraphService();
+export default agentGraphService;

@@ -1,64 +1,36 @@
 /**
- * Agent Service (Orchestrator)
+ * Sovereign Agent Service (LangGraph Orchestrator)
  *
- * Core agent orchestrator responsible for:
- * - Managing the complete lifecycle of multi-step tasks
- * - Enforcing execution limits and preventing infinite loops
- * - Coordinating between Agent Planner, Tool Registry, and Tool Executor
- * - Recording step-by-step state and audit trails
- * - Delivering deterministic and controlled responses
+ * Core agent orchestrator powered solely by LangGraph JS.
+ * - Coordinates task execution via LangGraph StateGraph
+ * - Manages chat-scoped context retrieval from MongoDB
+ * - Delivers streaming SSE progress events and final answer chunks
+ * - Enforces deterministic, bounded, and sovereign local execution
  */
 
 import crypto from "crypto";
-import { AGENT_STATUS, AGENT_ACTION_TYPES, AGENT_LIMITS } from "./agent.types.js";
-import toolRegistry from "./toolRegistry.service.js";
-import agentPlannerService from "./agentPlanner.service.js";
-import { executeTool } from "./agentExecutor.service.js";
-import agentStateService from "./agentState.service.js";
-import { streamChatFromOllama } from "../ollama.service.js";
-import qwenBrainService from "./qwenBrain.service.js";
-
+import { agentGraphService } from "./agentGraph.service.js";
+import { AGENT_STATUS } from "./agent.types.js";
 import Message from "../../models/Message.js";
-
-// Built-in tools
-import calculatorTool from "./tools/calculator.tool.js";
-import textTransformTool from "./tools/textTransform.tool.js";
-import retrievalTool from "./tools/retrieval.tool.js";
+import { streamChatFromOllama } from "../ollama.service.js";
 
 /**
- * Ensures standard built-in tools are registered.
- */
-export function initializeBuiltInTools() {
-  if (!toolRegistry.hasTool(calculatorTool.name)) {
-    toolRegistry.registerTool(calculatorTool);
-  }
-  if (!toolRegistry.hasTool(textTransformTool.name)) {
-    toolRegistry.registerTool(textTransformTool);
-  }
-  if (!toolRegistry.hasTool(retrievalTool.name)) {
-    toolRegistry.registerTool(retrievalTool);
-  }
-}
-
-// Auto-register built-in tools on load
-initializeBuiltInTools();
-
-/**
- * Execute an Agent task end-to-end.
+ * Execute an Agent task end-to-end using the LangGraph engine.
  *
  * @param {object} params
- * @param {string} params.message - User instruction / prompt
+ * @param {string} params.message - User prompt
  * @param {string} [params.taskId] - Unique task identifier
  * @param {string} [params.userId="user-local-admin"] - Authenticated user identifier
  * @param {string} [params.chatId=null] - Associated chat session ID
  * @param {string} [params.workspaceId="default"] - Active workspace ID
- * @param {object} [params.options={}] - Custom configuration / limit overrides
+ * @param {object} [params.options={}] - Custom configuration / callbacks (onProgress, onChunk, signal, retriever)
  * @returns {Promise<{
  *   success: boolean,
  *   taskId: string,
  *   status: string,
  *   response: string,
  *   steps: Array<object>,
+ *   events: Array<object>,
  *   executionTimeMs: number,
  *   error?: string
  * }>}
@@ -72,13 +44,12 @@ export async function runAgentTask({
   options = {},
 }) {
   const startTime = Date.now();
-  initializeBuiltInTools();
 
   if (!message || typeof message !== "string" || !message.trim()) {
     throw new Error("Task message is required.");
   }
 
-  // Load conversation context if chatId is provided
+  // Load chat session conversation history from MongoDB
   let conversationHistory = [];
   if (chatId) {
     try {
@@ -97,21 +68,7 @@ export async function runAgentTask({
     }
   }
 
-  // 1. Initialize task state
-  console.log(`[agent] task started: ${taskId}`);
-  const state = await agentStateService.createTaskState({
-    taskId,
-    userId,
-    chatId,
-    workspaceId,
-    userRequest: message.trim(),
-  });
-  state.conversationHistory = conversationHistory;
-
-  const maxSteps = options.maxSteps !== undefined ? options.maxSteps : AGENT_LIMITS.MAX_AGENT_STEPS;
-  const maxTools = options.maxTools !== undefined ? options.maxTools : AGENT_LIMITS.MAX_TOOL_EXECUTIONS;
-  const maxTimeMs = options.maxTimeMs !== undefined ? options.maxTimeMs : AGENT_LIMITS.MAX_EXECUTION_TIME_MS;
-  const maxConsecutiveIdenticalActions = options.maxConsecutiveIdenticalActions || 3;
+  console.log(`[agent] LangGraph task started: ${taskId}`);
 
   const progressEvents = [];
   const emitProgress = (event) => {
@@ -129,336 +86,136 @@ export async function runAgentTask({
     }
   };
 
-  let toolExecutionCount = 0;
-  const actionHistory = [];
+  // Build the compiled LangGraph workflow
+  const app = agentGraphService.buildGraph({
+    onProgress: emitProgress,
+    retriever: options.retriever,
+    signal: options.signal,
+  });
 
-  // 2. Orchestration loop
-  while (
-    state.status !== AGENT_STATUS.COMPLETED &&
-    state.status !== AGENT_STATUS.FAILED &&
-    state.status !== AGENT_STATUS.CANCELLED
-  ) {
-    // Check if client cancelled/stopped execution
-    if (options.signal && options.signal.aborted) {
-      console.log(`[agent] task aborted by client: ${taskId}`);
-      await agentStateService.updateTaskStatus(taskId, AGENT_STATUS.CANCELLED, {
-        finalResponse: "Agent task stopped by user.",
-      });
-      emitProgress({
-        type: "agent_status",
-        status: "cancelled",
-        message: "Agent task stopped by user.",
-      });
-      break;
-    }
-
-    // Check Step Limit
-    if (state.steps.length >= maxSteps) {
-      const errMsg = `Maximum steps reached: execution limit exceeded, maximum allowed steps (${maxSteps}) reached.`;
-      await agentStateService.failTask(taskId, errMsg);
-      emitProgress({
-        type: "agent_status",
-        status: "error",
-        error: errMsg,
-      });
-      break;
-    }
-
-    // Check Execution Time Limit
-    if (Date.now() - startTime >= maxTimeMs) {
-      const errMsg = `Execution time limit exceeded (${maxTimeMs}ms).`;
-      await agentStateService.failTask(taskId, errMsg);
-      emitProgress({
-        type: "agent_status",
-        status: "error",
-        error: errMsg,
-      });
-      break;
-    }
-
-    // Transition state to PLANNING
-    await agentStateService.updateTaskStatus(taskId, AGENT_STATUS.PLANNING);
-    emitProgress({
-      type: "agent_status",
-      status: "planning",
-      message: state.steps.length === 0 ? "Analysing the question..." : "Planning the response...",
-      reason: state.steps.length === 0 ? "Analysing request and identifying required tasks..." : "Evaluating next action...",
-    });
-
-    // 3. Invoke Planner to decide next structured action
-    const availableTools = toolRegistry.getTools();
-    const decision = await agentPlannerService.planNextStep({
-      taskState: state,
-      availableTools,
+  let finalGraphState;
+  try {
+    finalGraphState = await app.invoke({
+      taskId,
+      userId,
+      chatId,
+      workspaceId,
+      userRequest: message.trim(),
       conversationHistory,
+      steps: [],
+      toolExecutionCount: 0,
+      status: AGENT_STATUS.PLANNING,
+      currentAction: null,
+      finalResponse: "",
+      error: null,
     });
+  } catch (graphErr) {
+    console.error(`[agent.service] Error during LangGraph execution:`, graphErr);
+    return {
+      success: false,
+      taskId,
+      status: "failed",
+      response: "",
+      steps: [],
+      events: progressEvents,
+      executionTimeMs: Date.now() - startTime,
+      error: graphErr.message,
+    };
+  }
 
-    const actionType = decision?.type || decision?.action;
-    const toolName = decision?.tool || decision?.toolName;
+  let finalAnswer = finalGraphState.finalResponse || "";
 
-    // 4. Handle Decision: FINAL
-    if (actionType === AGENT_ACTION_TYPES.FINAL) {
-      console.log(`[agent] brain decision: final`);
-      emitProgress({
-        type: "agent_status",
-        status: "preparing_answer",
-        message: "Generating the response...",
-        reason: decision.reason || "Synthesizing final answer...",
-      });
+  // Stream answer chunks if requested and answer is available
+  const isStreamingRequested = typeof options.onChunk === "function";
+  if (isStreamingRequested && finalAnswer) {
+    const isMockBrain = typeof agentGraphService.brainLlmClient === "function";
+    if (!isMockBrain && finalGraphState.steps?.length > 0) {
+      try {
+        const streamPrompt = `You are Sovereign Agent. Provide a direct, well-structured final answer to the user based on these tool results:
+User: "${message}"
+Tool results: ${JSON.stringify(finalGraphState.steps.map((s) => s.observation))}`;
 
-      let finalResponse = "";
-      const isStreamingRequested = typeof options.onChunk === "function";
-      const isMockBrain = typeof qwenBrainService.brainLlmClient === "function";
+        const { stream: ollamaStream } = await streamChatFromOllama(
+          [{ role: "user", content: streamPrompt }],
+          options.signal || null,
+          "qwen3:8b",
+          { think: false }
+        );
 
-      if (isStreamingRequested && !isMockBrain) {
-        try {
-          const finalSystemPrompt = `You are Sovereign Agent, a helpful, precise, and accurate assistant. Provide a direct, well-structured final answer to the user. Base your answer on the provided tool observations or context if any. Do not repeat internal planning steps or tool names unless relevant to the answer.`;
+        const reader = ollamaStream.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let streamedAnswer = "";
 
-          let toolObservationSummary = "";
-          if (state.steps && state.steps.length > 0) {
-            toolObservationSummary = state.steps
-              .map((s, idx) => {
-                let obs = s.observation;
-                if (obs === undefined || obs === null) {
-                  obs = s.output?.result !== undefined ? s.output.result : s.output?.error;
-                }
-                const obsStr = typeof obs === "object" ? JSON.stringify(obs) : String(obs || "");
-                return `Tool ${idx + 1} (${s.toolName || s.tool}): ${obsStr}`;
-              })
-              .join("\n\n");
+        while (true) {
+          if (options.signal && options.signal.aborted) {
+            reader.cancel().catch(() => {});
+            break;
           }
+          const { done, value } = await reader.read();
+          if (done) break;
 
-          let finalUserPrompt = state.userRequest;
-          if (toolObservationSummary) {
-            finalUserPrompt = `User Request: "${state.userRequest}"\n\nTool Results:\n${toolObservationSummary}\n\nBased on the above tool results and request, provide the final answer for the user.`;
-          }
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
 
-          const finalMessages = [
-            { role: "system", content: finalSystemPrompt },
-            ...(conversationHistory || []).map((m) => ({ role: m.role, content: m.content })),
-            { role: "user", content: finalUserPrompt },
-          ];
-
-          const { stream: ollamaStream } = await streamChatFromOllama(
-            finalMessages,
-            options.signal || null,
-            "qwen3:8b",
-            { think: false }
-          );
-
-          const reader = ollamaStream.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-
-          while (true) {
-            if (options.signal && options.signal.aborted) {
-              reader.cancel().catch(() => {});
-              break;
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            let chunk;
+            try {
+              chunk = JSON.parse(trimmed);
+            } catch {
+              continue;
             }
-
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() ?? "";
-
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed) continue;
-
-              let chunk;
-              try {
-                chunk = JSON.parse(trimmed);
-              } catch {
-                continue;
-              }
-
-              // Omit private thinking tokens
-              if (chunk?.message?.thinking) {
-                continue;
-              }
-
-              const token = chunk?.message?.content || "";
-              if (token) {
-                const cleanToken = token.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, "");
-                if (cleanToken) {
-                  finalResponse += cleanToken;
-                  options.onChunk({ text: cleanToken });
-                }
+            if (chunk?.message?.thinking) continue;
+            const token = chunk?.message?.content || "";
+            if (token) {
+              const cleanToken = token.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, "");
+              if (cleanToken) {
+                streamedAnswer += cleanToken;
+                options.onChunk({ text: cleanToken });
               }
             }
           }
-        } catch (streamErr) {
-          console.warn("[agent.service] Notice: Streaming final answer from Ollama failed, falling back:", streamErr.message);
-          if (!finalResponse.trim()) {
-            finalResponse = decision.answer || decision.response || decision.reason || "Task completed successfully.";
-            options.onChunk({ text: finalResponse });
-          }
         }
-      }
-
-      if (!finalResponse.trim()) {
-        finalResponse = decision.answer || decision.response || decision.reason || "Task completed successfully.";
-        if (isStreamingRequested) {
-          options.onChunk({ text: finalResponse });
+        if (streamedAnswer.trim()) {
+          finalAnswer = streamedAnswer;
         }
+      } catch {
+        options.onChunk({ text: finalAnswer });
       }
-
-      await agentStateService.completeTask(taskId, finalResponse);
-      emitProgress({
-        type: "agent_status",
-        status: "completed",
-        message: "Response ready",
-      });
-      break;
-    }
-
-    // 5. Handle Decision: ERROR
-    if (actionType === AGENT_ACTION_TYPES.ERROR) {
-      const errMsg = decision.reason || "Planning error occurred.";
-      console.log(`[agent] brain error: ${errMsg}`);
-      await agentStateService.failTask(taskId, errMsg);
-      emitProgress({
-        type: "agent_status",
-        status: "error",
-        error: errMsg,
-      });
-      break;
-    }
-
-    // 6. Handle Decision: TOOL
-    if (actionType === AGENT_ACTION_TYPES.TOOL) {
-      console.log(`[agent] brain decision: ${toolName}`);
-      // Check Tool Executions Limit
-      if (toolExecutionCount >= maxTools) {
-        const errMsg = `Execution limit exceeded: maximum allowed tool executions (${maxTools}) reached.`;
-        await agentStateService.failTask(taskId, errMsg);
-        emitProgress({
-          type: "agent_status",
-          status: "error",
-          error: errMsg,
-        });
-        break;
-      }
-
-      // Check Repeated Identical Action (Agent Stuck Protection)
-      const actionFingerprint = `${toolName}:::${JSON.stringify(decision.input || {})}`;
-      if (actionHistory.length >= maxConsecutiveIdenticalActions) {
-        const recent = actionHistory.slice(-maxConsecutiveIdenticalActions);
-        const isStuck = recent.every((fp) => fp === actionFingerprint);
-        if (isStuck) {
-          const errMsg = `Agent stuck: detected repeated identical action for tool "${toolName}". Execution stopped safely.`;
-          await agentStateService.failTask(taskId, errMsg);
-          emitProgress({
-            type: "agent_status",
-            status: "error",
-            error: errMsg,
-          });
-          break;
-        }
-      }
-      actionHistory.push(actionFingerprint);
-
-      await agentStateService.updateTaskStatus(taskId, AGENT_STATUS.EXECUTING);
-      toolExecutionCount++;
-
-      const toolActionMsg =
-        toolName === "retrieve_information"
-          ? "🔧 Searching knowledge base..."
-          : toolName === "calculator"
-          ? "🔧 Calling calculator..."
-          : toolName === "text_transform"
-          ? "🔧 Transforming text..."
-          : `🔧 Using ${toolName}...`;
-
-      emitProgress({
-        type: "agent_status",
-        status: "tool",
-        tool: toolName,
-        message: toolActionMsg,
-        reason: decision.reason || toolActionMsg,
-      });
-
-      // Execute selected tool via Agent Executor
-      const toolResult = await executeTool({
-        toolName,
-        input: decision.input || {},
-        context: {
-          taskId,
-          userId,
-          chatId,
-          workspaceId,
-          ...(options.retriever ? { retriever: options.retriever } : {}),
-          ...(options.context || {}),
-        },
-      });
-
-      // Capture observation
-      const observation = toolResult.success
-        ? (toolResult.result !== undefined ? toolResult.result : null)
-        : { error: toolResult.error };
-
-      // Record step in state
-      await agentStateService.recordStep(taskId, {
-        type: AGENT_ACTION_TYPES.TOOL,
-        action: AGENT_ACTION_TYPES.TOOL,
-        tool: toolName,
-        toolName: toolName,
-        reason: decision.reason,
-        input: decision.input,
-        output: toolResult,
-        observation,
-        status: toolResult.success ? "completed" : "failed",
-        executionTimeMs: toolResult.executionTimeMs || 0,
-      });
-
-      // Record tool result
-      await agentStateService.recordToolResult(taskId, toolResult);
-      console.log(`[agent] tool completed: ${toolName} (${toolResult.success ? "success" : "failed"})`);
-
-      const toolDoneMsg = toolResult.success
-        ? toolName === "retrieve_information"
-          ? "✓ Knowledge retrieved"
-          : toolName === "calculator"
-          ? "✓ Calculation completed"
-          : toolName === "text_transform"
-          ? "✓ Text transformed"
-          : "✓ Tool completed"
-        : `✗ Tool "${toolName}" failed`;
-
-      emitProgress({
-        type: "agent_status",
-        status: "tool_complete",
-        tool: toolName,
-        success: toolResult.success,
-        message: toolDoneMsg,
-      });
-
-      emitProgress({
-        type: "agent_status",
-        status: "analyzing",
-        tool: toolName,
-        message: "Analysing result...",
-        reason: `Analyzing result from ${toolName}...`,
-      });
+    } else {
+      options.onChunk({ text: finalAnswer });
     }
   }
 
-  const finalState = await agentStateService.getTaskState(taskId);
+  const isSuccess =
+    finalGraphState.status === AGENT_STATUS.COMPLETED &&
+    !finalGraphState.error;
+
+  if (isSuccess) {
+    emitProgress({
+      status: "completed",
+      message: "Response ready",
+    });
+  }
+
   const totalExecutionTimeMs = Date.now() - startTime;
-  console.log(`[agent] task completed: ${taskId} (${finalState.status})`);
+  console.log(`[agent] LangGraph task finished: ${taskId} (${isSuccess ? "COMPLETED" : "FAILED"})`);
 
   return {
-    success: finalState.status === AGENT_STATUS.COMPLETED,
-    taskId: finalState.taskId,
-    status: finalState.status,
-    response: finalState.finalResponse,
-    steps: finalState.steps,
+    success: isSuccess,
+    taskId,
+    status: isSuccess ? "completed" : "failed",
+    response: finalAnswer,
+    steps: finalGraphState.steps || [],
     events: progressEvents,
     executionTimeMs: totalExecutionTimeMs,
-    ...(finalState.error ? { error: finalState.error } : {}),
+    ...(finalGraphState.error ? { error: finalGraphState.error } : {}),
   };
 }
 
-export default { runAgentTask, initializeBuiltInTools };
+export default {
+  runAgentTask,
+};

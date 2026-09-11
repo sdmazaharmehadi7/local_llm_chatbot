@@ -19,19 +19,13 @@ const SLASH_COMMANDS = [
   },
   {
     command: "/agent",
-    label: "Custom Agent",
-    description: "Custom Agent Foundation multi-step reasoning with tools",
+    label: "Sovereign Agent",
+    description: "Multi-step reasoning with LangGraph & local Qwen3",
     icon: Sparkles,
-    badge: "Custom",
-  },
-  {
-    command: "/framework-agent",
-    label: "LangGraph Agent",
-    description: "LangGraph state-machine multi-step reasoning with tools",
-    icon: Sparkles,
-    badge: "LangGraph",
+    badge: "Agent",
   },
 ];
+
 
 
 const InputArea = ({

@@ -190,20 +190,13 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
     if (!chatId) return;
 
     // Check for explicit /agent or /framework-agent / /langgraph trigger
-    const isFrameworkAgentTrigger = /^\/(?:framework-agent|agent-framework|langgraph)(?:\s+|$)/i.test(trimmedContent);
-    const isCustomAgentTrigger = !isFrameworkAgentTrigger && /^\/agent(?:\s+|$)/i.test(trimmedContent);
+    const isAgentTrigger = /^\/(?:agent|framework-agent|agent-framework|langgraph)(?:\s+|$)/i.test(trimmedContent);
 
-    if (isFrameworkAgentTrigger || isCustomAgentTrigger) {
-      const agentTask = isFrameworkAgentTrigger
-        ? trimmedContent.replace(/^\/(?:framework-agent|agent-framework|langgraph)\s*/i, "").trim()
-        : trimmedContent.replace(/^\/agent\s*/i, "").trim();
+    if (isAgentTrigger) {
+      const agentTask = trimmedContent.replace(/^\/(?:agent|framework-agent|agent-framework|langgraph)\s*/i, "").trim();
 
       if (!agentTask) {
-        toast.error(
-          isFrameworkAgentTrigger
-            ? "Please provide a task for the framework agent. Example: /framework-agent Calculate 25 * 40"
-            : "Please provide a task for the agent. Example: /agent Calculate 25 * 0.17"
-        );
+        toast.error("Please provide a task for the agent. Example: /agent Calculate 25 * 40");
         return;
       }
 
@@ -236,12 +229,12 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
         const updateStatus = createStepUpdater(setAgentStatus);
         updateStatus({
           status: "planning",
-          message: isFrameworkAgentTrigger ? "Analysing question with LangGraph..." : "Analysing your question...",
+          message: "Analysing your question...",
         });
 
         let agentResult = null;
-        const endpoint = isFrameworkAgentTrigger ? "/api/agent/framework/tasks" : "/api/agent/tasks";
-        const targetUrl = API_BASE ? `${API_BASE}${endpoint}` : endpoint;
+        const targetUrl = API_BASE ? `${API_BASE}/api/agent/tasks` : "/api/agent/tasks";
+
 
         try {
           const response = await fetch(targetUrl, {

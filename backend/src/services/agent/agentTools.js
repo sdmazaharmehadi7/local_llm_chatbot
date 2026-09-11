@@ -1,21 +1,25 @@
 /**
- * Framework Tools Adapter
+ * Sovereign Agent Tools (LangChain Structured Tools)
  *
- * Adapts existing sovereign agent tools (calculator, text_transform, retrieval)
- * into LangChain StructuredTool instances for the LangGraph framework agent.
+ * Defines and registers tools for the LangGraph agent using LangChain
+ * DynamicStructuredTool with strict Zod schemas.
+ *
+ * TOOLS:
+ * 1. calculator: Evaluates arithmetic and math expressions safely.
+ * 2. text_transform: Performs deterministic text formatting/string transforms.
+ * 3. retrieve_information: Searches documents/manuals via existing unified retrieval.
  *
  * GUARANTEES:
- * - Reuses existing validated tool implementations without code duplication
- * - Enforces strict Zod schema validation on tool arguments
- * - Preserves caller context (userId, chatId, workspaceId) for retrieval
- * - Zero external dependencies or cloud calls
+ * - Enforces strict Zod schema validation
+ * - Injects and prioritizes caller context (userId, chatId, workspaceId) for retrieval
+ * - Zero external dependencies, cloud calls, or duplicate RAG pipelines
  */
 
 import { z } from "zod";
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import calculatorTool from "../tools/calculator.tool.js";
-import textTransformTool from "../tools/textTransform.tool.js";
-import retrievalTool from "../tools/retrieval.tool.js";
+import calculatorTool from "./tools/calculator.tool.js";
+import textTransformTool from "./tools/textTransform.tool.js";
+import retrievalTool from "./tools/retrieval.tool.js";
 
 /**
  * Zod schema for calculator tool
@@ -86,7 +90,7 @@ export const RetrievalSchema = z.object({
  * @param {Function} [context.retriever]
  * @returns {Array<DynamicStructuredTool>}
  */
-export function createFrameworkTools(context = {}) {
+export function createAgentTools(context = {}) {
   const calcTool = new DynamicStructuredTool({
     name: "calculator",
     description:
@@ -124,19 +128,7 @@ export function createFrameworkTools(context = {}) {
 }
 
 /**
- * Returns static metadata for registered framework tools.
- */
-export function getFrameworkToolsMetadata() {
-  const dummyTools = createFrameworkTools();
-  return dummyTools.map((t) => ({
-    name: t.name,
-    description: t.description,
-    schema: t.schema ? zodToJsonSchema(t.schema) : {},
-  }));
-}
-
-/**
- * Helper to produce clean JSON Schema from Zod for tool description / inspection
+ * Helper to safely extract clean JSON Schema from Zod for tool description / inspection
  */
 function zodToJsonSchema(zodSchema) {
   try {
@@ -155,16 +147,26 @@ function zodToJsonSchema(zodSchema) {
     }
     return { type: "object", properties, required };
   } catch {
-    // fallback
+    return { type: "object" };
   }
-  return { type: "object" };
 }
 
+/**
+ * Returns static metadata for registered tools.
+ */
+export function getAgentToolsMetadata() {
+  const dummyTools = createAgentTools();
+  return dummyTools.map((t) => ({
+    name: t.name,
+    description: t.description,
+    schema: t.schema ? zodToJsonSchema(t.schema) : {},
+  }));
+}
 
 export default {
   CalculatorSchema,
   TextTransformSchema,
   RetrievalSchema,
-  createFrameworkTools,
-  getFrameworkToolsMetadata,
+  createAgentTools,
+  getAgentToolsMetadata,
 };

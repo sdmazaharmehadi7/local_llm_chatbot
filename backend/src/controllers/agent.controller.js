@@ -1,16 +1,15 @@
 /**
- * Agent Controller
+ * Sovereign Agent Controller
  *
- * Exposes endpoints for managing and executing agent tasks.
+ * Exposes REST and SSE endpoints for the LangGraph-powered Sovereign Agent.
  */
 
 import { runAgentTask } from "../services/agent/agent.service.js";
-import agentStateService from "../services/agent/agentState.service.js";
-import toolRegistry from "../services/agent/toolRegistry.service.js";
+import { getAgentToolsMetadata } from "../services/agent/agentTools.js";
 
 /**
  * POST /api/agent/tasks
- * Submit a multi-step task to the Agent orchestrator.
+ * Submit a task to the LangGraph Sovereign Agent.
  */
 export async function createAgentTask(req, res) {
   try {
@@ -50,18 +49,19 @@ export async function createAgentTask(req, res) {
 
       const sendSse = (eventName, data) => {
         if (!res.writableEnded) {
-          const payload = typeof data === "object" && data !== null
-            ? { type: eventName, ...data }
-            : { type: eventName, value: data };
+          const payload =
+            typeof data === "object" && data !== null
+              ? { type: eventName, ...data }
+              : { type: eventName, value: data };
           res.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
         }
       };
 
       try {
-        // Emit initial start event
         sendSse("agent_start", {
           message: "Analysing your question...",
           status: "planning",
+          framework: "langgraph",
         });
 
         const taskResult = await runAgentTask({
@@ -75,13 +75,9 @@ export async function createAgentTask(req, res) {
             onProgress: (evt) => {
               const status = evt.status;
               if (status === "planning") {
-                const planningMsg =
-                  evt.message && !evt.message.toLowerCase().includes("analys")
-                    ? evt.message
-                    : "Determining the required action...";
                 sendSse("reasoning", {
                   status: "planning",
-                  message: planningMsg,
+                  message: evt.message || "Evaluating required action...",
                   reason: evt.reason || "Evaluating task...",
                 });
               } else if (status === "tool") {
@@ -96,13 +92,13 @@ export async function createAgentTask(req, res) {
                   status: "tool_complete",
                   tool: evt.tool,
                   success: evt.success,
-                  message: evt.message || "Retrieved relevant information.",
+                  message: evt.message || "Tool execution completed.",
                 });
               } else if (status === "analyzing") {
                 sendSse("reasoning", {
                   status: "analyzing",
                   tool: evt.tool,
-                  message: evt.message || "Evaluating the retrieved information...",
+                  message: evt.message || "Evaluating the tool output...",
                   reason: evt.reason,
                 });
               } else if (status === "preparing_answer") {
@@ -136,10 +132,10 @@ export async function createAgentTask(req, res) {
           },
         });
 
-        // Conclude with agent_complete and agent_result
         sendSse("agent_complete", {
           message: "Completed",
           status: "completed",
+          framework: "langgraph",
           taskId: taskResult.taskId,
           response: taskResult.response,
           steps: taskResult.steps,
@@ -148,6 +144,7 @@ export async function createAgentTask(req, res) {
 
         sendSse("agent_result", {
           ...taskResult,
+          framework: "langgraph",
         });
       } catch (streamErr) {
         sendSse("error", {
@@ -173,7 +170,10 @@ export async function createAgentTask(req, res) {
       options: options || {},
     });
 
-    return res.status(taskResult.success ? 200 : 422).json(taskResult);
+    return res.status(taskResult.success ? 200 : 422).json({
+      ...taskResult,
+      framework: "langgraph",
+    });
   } catch (err) {
     console.error("[agent.controller] Error creating agent task:", err);
     return res.status(500).json({
@@ -185,7 +185,7 @@ export async function createAgentTask(req, res) {
 
 /**
  * GET /api/agent/tasks/:taskId
- * Retrieve status, execution steps, and audit log for a task.
+ * Retrieve status for a task.
  */
 export async function getAgentTask(req, res) {
   try {
@@ -194,14 +194,11 @@ export async function getAgentTask(req, res) {
       return res.status(400).json({ success: false, error: "Task ID is required." });
     }
 
-    const taskState = await agentStateService.getTaskState(taskId);
-    if (!taskState) {
-      return res.status(404).json({ success: false, error: "Task not found." });
-    }
-
     return res.json({
       success: true,
-      task: taskState,
+      framework: "langgraph",
+      taskId,
+      message: "Agent state is managed through the LangGraph execution cycle.",
     });
   } catch (err) {
     console.error(`[agent.controller] Error fetching task ${req.params.taskId}:`, err);
@@ -211,13 +208,14 @@ export async function getAgentTask(req, res) {
 
 /**
  * GET /api/agent/tools
- * List all registered tools and their specifications.
+ * List all registered LangChain tools in the sovereign catalog.
  */
 export async function listAgentTools(_req, res) {
   try {
-    const tools = toolRegistry.getTools();
+    const tools = getAgentToolsMetadata();
     return res.json({
       success: true,
+      framework: "langgraph",
       tools,
       count: tools.length,
     });

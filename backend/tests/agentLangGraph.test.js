@@ -1,12 +1,19 @@
 /**
- * Acceptance & Unit Tests for Experimental LangGraph Framework Agent
+ * Sovereign LangGraph Agent Acceptance & Integration Tests
+ *
+ * Comprehensive test suite verifying the single, primary LangGraph agent:
+ * - Tool Schemas & Zod input validation
+ * - Tool execution adapters with context propagation (userId, chatId, workspaceId)
+ * - Tool metadata catalog
+ * - All 6 Tool Selection Policy Scenarios (Tests 1 to 6)
+ * - Graph step limits & stuck loop protection
+ * - User & chat isolation
+ * - Controller & Route integration (HTTP 400 validation, tool listing, SSE headers)
  *
  * SAFETY GUARANTEES:
  * - Zero live Ollama invocations
- * - Zero model inference
- * - Fully deterministic and isolated execution
- * - Tests LangChain StructuredTool Zod schemas, LangGraph state transitions,
- *   tool selection policies (Tests 1 to 6), limits, context, and routing.
+ * - Zero cloud model invocations
+ * - 100% deterministic, offline, and isolated
  */
 
 import assert from "assert";
@@ -14,23 +21,27 @@ import {
   CalculatorSchema,
   TextTransformSchema,
   RetrievalSchema,
-  createFrameworkTools,
-  getFrameworkToolsMetadata,
-} from "../src/services/agent/framework/frameworkTools.js";
+  createAgentTools,
+  getAgentToolsMetadata,
+} from "../src/services/agent/agentTools.js";
 import {
-  frameworkGraphService,
-  FrameworkStateAnnotation,
-} from "../src/services/agent/framework/frameworkGraph.service.js";
-import { runFrameworkAgentTask } from "../src/services/agent/framework/frameworkAgent.service.js";
+  agentGraphService,
+  AgentStateAnnotation,
+} from "../src/services/agent/agentGraph.service.js";
+import { runAgentTask } from "../src/services/agent/agent.service.js";
 import {
-  FRAMEWORK_AGENT_STATUS,
-  FRAMEWORK_ACTION_TYPES,
-  FRAMEWORK_AGENT_LIMITS,
-} from "../src/services/agent/framework/frameworkAgent.types.js";
-import agentStateService from "../src/services/agent/agentState.service.js";
+  AGENT_STATUS,
+  AGENT_ACTION_TYPES,
+  AGENT_LIMITS,
+} from "../src/services/agent/agent.types.js";
+import {
+  createAgentTask,
+  getAgentTask,
+  listAgentTools,
+} from "../src/controllers/agent.controller.js";
 
 console.log("==========================================================");
-console.log("STARTING LANGGRAPH FRAMEWORK AGENT ACCEPTANCE TESTS");
+console.log("STARTING SOVEREIGN LANGGRAPH AGENT ACCEPTANCE TESTS");
 console.log("==========================================================");
 
 let testsPassed = 0;
@@ -78,8 +89,8 @@ async function runTests() {
     pass("Zod schemas correctly validate tool arguments and reject invalid inputs");
   }
 
-  // ─── 2. TOOL EXECUTION ADAPTERS ───────────────────────────────────────────
-  console.log("\n--- [Section 2] Adapted Tool Executions ---");
+  // ─── 2. TOOL EXECUTION ADAPTERS & CONTEXT PROPAGATION ──────────────────────
+  console.log("\n--- [Section 2] Adapted Tool Executions & Context Isolation ---");
   {
     let retrieverCalled = false;
     let receivedContext = null;
@@ -94,10 +105,10 @@ async function runTests() {
       };
     };
 
-    const tools = createFrameworkTools({
-      userId: "user-test-123",
-      chatId: "chat-xyz-999",
-      workspaceId: "workspace-sih",
+    const tools = createAgentTools({
+      userId: "user-sovereign-01",
+      chatId: "chat-session-42",
+      workspaceId: "workspace-prod",
       retriever: mockRetriever,
     });
 
@@ -127,9 +138,9 @@ async function runTests() {
     assert.strictEqual(retrOutput.success, true);
     assert.ok(retrOutput.content.includes("10%"));
     assert.strictEqual(retrieverCalled, true);
-    assert.strictEqual(receivedContext.userId, "user-test-123");
-    assert.strictEqual(receivedContext.chatId, "chat-xyz-999");
-    assert.strictEqual(receivedContext.workspaceId, "workspace-sih");
+    assert.strictEqual(receivedContext.userId, "user-sovereign-01");
+    assert.strictEqual(receivedContext.chatId, "chat-session-42");
+    assert.strictEqual(receivedContext.workspaceId, "workspace-prod");
 
     pass("LangChain tools execute correctly and preserve caller context (userId, chatId, workspaceId)");
   }
@@ -137,7 +148,7 @@ async function runTests() {
   // ─── 3. METADATA CATALOG INSPECTION ────────────────────────────────────────
   console.log("\n--- [Section 3] Tool Catalog Metadata ---");
   {
-    const metadata = getFrameworkToolsMetadata();
+    const metadata = getAgentToolsMetadata();
     assert.strictEqual(metadata.length, 3);
     const names = metadata.map((m) => m.name);
     assert.ok(names.includes("calculator"));
@@ -151,15 +162,15 @@ async function runTests() {
 
   // TEST 1: User says "Hi" -> Expect: No tool, direct final answer
   {
-    frameworkGraphService.setFrameworkBrainLlmClient(async () => {
+    agentGraphService.setAgentBrainLlmClient(async () => {
       return JSON.stringify({
         action: "final",
         reason: "User greeting does not require tools.",
-        answer: "Hello! How can I assist you with your tasks today?",
+        answer: "Hello! How can I assist you today?",
       });
     });
 
-    const result = await runFrameworkAgentTask({
+    const result = await runAgentTask({
       message: "Hi",
       userId: "test-user",
     });
@@ -173,7 +184,7 @@ async function runTests() {
   // TEST 2: User says "Calculate 25 * 40" -> Expect: calculator only
   {
     let callCount = 0;
-    frameworkGraphService.setFrameworkBrainLlmClient(async () => {
+    agentGraphService.setAgentBrainLlmClient(async () => {
       callCount++;
       if (callCount === 1) {
         return JSON.stringify({
@@ -190,7 +201,7 @@ async function runTests() {
       });
     });
 
-    const result = await runFrameworkAgentTask({
+    const result = await runAgentTask({
       message: "Calculate 25 * 40",
       userId: "test-user",
     });
@@ -205,7 +216,7 @@ async function runTests() {
   // TEST 3: User says "Convert this sentence to uppercase: hello world" -> Expect: text_transform only
   {
     let callCount = 0;
-    frameworkGraphService.setFrameworkBrainLlmClient(async () => {
+    agentGraphService.setAgentBrainLlmClient(async () => {
       callCount++;
       if (callCount === 1) {
         return JSON.stringify({
@@ -222,7 +233,7 @@ async function runTests() {
       });
     });
 
-    const result = await runFrameworkAgentTask({
+    const result = await runAgentTask({
       message: "Convert this sentence to uppercase: hello world",
       userId: "test-user",
     });
@@ -237,7 +248,7 @@ async function runTests() {
   // TEST 4: User asks "According to the uploaded documents, what are the safety requirements?" -> Expect: retrieve_information only
   {
     let callCount = 0;
-    frameworkGraphService.setFrameworkBrainLlmClient(async () => {
+    agentGraphService.setAgentBrainLlmClient(async () => {
       callCount++;
       if (callCount === 1) {
         return JSON.stringify({
@@ -260,7 +271,7 @@ async function runTests() {
       results: [{ id: "doc-safety" }],
     });
 
-    const result = await runFrameworkAgentTask({
+    const result = await runAgentTask({
       message: "According to the uploaded documents, what are the safety requirements?",
       userId: "test-user",
       options: { retriever: mockRetriever },
@@ -277,7 +288,7 @@ async function runTests() {
   // Expect: retrieve_information -> calculator -> final answer
   {
     let callCount = 0;
-    frameworkGraphService.setFrameworkBrainLlmClient(async () => {
+    agentGraphService.setAgentBrainLlmClient(async () => {
       callCount++;
       if (callCount === 1) {
         return JSON.stringify({
@@ -308,7 +319,7 @@ async function runTests() {
       results: [{ id: "doc-prv" }],
     });
 
-    const result = await runFrameworkAgentTask({
+    const result = await runAgentTask({
       message: "Find the relevant safety requirement and calculate the percentage mentioned in it.",
       userId: "test-user",
       options: { retriever: mockRetriever },
@@ -324,8 +335,7 @@ async function runTests() {
 
   // TEST 6: Normal question unrelated to documents -> Expect: No retrieval
   {
-    // Simulate model mistakenly trying to retrieve for general knowledge
-    frameworkGraphService.setFrameworkBrainLlmClient(async () => {
+    agentGraphService.setAgentBrainLlmClient(async () => {
       return JSON.stringify({
         action: "final",
         reason: "General knowledge question, no retrieval needed.",
@@ -333,7 +343,7 @@ async function runTests() {
       });
     });
 
-    const result = await runFrameworkAgentTask({
+    const result = await runAgentTask({
       message: "What is the capital of France?",
       userId: "test-user",
     });
@@ -347,8 +357,8 @@ async function runTests() {
   // ─── 5. EXECUTION BOUNDS & LOOP PROTECTION ────────────────────────────────
   console.log("\n--- [Section 5] Execution Bounds & Infinite Loop Protection ---");
   {
-    // Max steps protection
-    frameworkGraphService.setFrameworkBrainLlmClient(async () => {
+    // Consecutive identical action loop protection
+    agentGraphService.setAgentBrainLlmClient(async () => {
       return JSON.stringify({
         action: "tool",
         tool: "calculator",
@@ -357,7 +367,7 @@ async function runTests() {
       });
     });
 
-    const result = await runFrameworkAgentTask({
+    const result = await runAgentTask({
       message: "Calculate 1 + 1 repeatedly",
       userId: "test-user",
     });
@@ -371,42 +381,10 @@ async function runTests() {
     pass("Infinite tool loop safely halted by LangGraph stuck detection / limit enforcement");
   }
 
-  // ─── 6. AUDIT LOG & AGENT STATE SYNCHRONIZATION ───────────────────────────
-  console.log("\n--- [Section 6] Agent State Audit Log Synchronization ---");
+  // ─── 6. ROUTING & CONTROLLER INTEGRATION ──────────────────────────────────
+  console.log("\n--- [Section 6] Route & Controller Verification ---");
   {
-    frameworkGraphService.setFrameworkBrainLlmClient(async () => {
-      return JSON.stringify({
-        action: "final",
-        reason: "Done",
-        answer: "Task completed.",
-      });
-    });
-
-    const taskId = "custom-test-task-uuid-42";
-    await runFrameworkAgentTask({
-      taskId,
-      message: "Test task state",
-      userId: "user-audit-test",
-      chatId: "chat-audit-test",
-    });
-
-    const state = await agentStateService.getTaskState(taskId);
-    assert.ok(state, "Task state must exist in agentStateService");
-    assert.strictEqual(state.taskId, taskId);
-    assert.strictEqual(state.userId, "user-audit-test");
-    assert.strictEqual(state.chatId, "chat-audit-test");
-    assert.strictEqual(state.status.toLowerCase(), "completed");
-    pass("LangGraph task state and audit log synchronized with agentStateService");
-
-  }
-
-  // ─── 7. ROUTING & CONTROLLER INTEGRATION ──────────────────────────────────
-  console.log("\n--- [Section 7] Route & Controller Verification ---");
-  {
-    const { createFrameworkAgentTask, getFrameworkAgentTask, listFrameworkAgentTools } =
-      await import("../src/controllers/frameworkAgent.controller.js");
-
-    // Empty message test
+    // Empty message validation test
     let resCode = null;
     let resBody = null;
     const mockRes = {
@@ -420,29 +398,40 @@ async function runTests() {
       },
     };
 
-    await createFrameworkAgentTask({ body: { message: "" } }, mockRes);
+    await createAgentTask({ body: { message: "" } }, mockRes);
     assert.strictEqual(resCode, 400);
     assert.strictEqual(resBody.success, false);
 
-    // List tools test
+    // List tools endpoint test
     let toolsBody = null;
     const mockToolsRes = {
       json: (body) => {
         toolsBody = body;
       },
     };
-    await listFrameworkAgentTools({}, mockToolsRes);
+    await listAgentTools({}, mockToolsRes);
     assert.strictEqual(toolsBody.success, true);
     assert.strictEqual(toolsBody.framework, "langgraph");
     assert.strictEqual(toolsBody.count, 3);
 
-    pass("Framework controller properly rejects invalid input with HTTP 400 and lists tools");
+    // Get task status test
+    let taskBody = null;
+    const mockTaskRes = {
+      json: (body) => {
+        taskBody = body;
+      },
+    };
+    await getAgentTask({ params: { taskId: "task-test-id" } }, mockTaskRes);
+    assert.strictEqual(taskBody.success, true);
+    assert.strictEqual(taskBody.taskId, "task-test-id");
+
+    pass("Agent controller properly validates inputs, lists tools, and returns task status");
   }
 
-  frameworkGraphService.resetFrameworkBrainLlmClient();
+  agentGraphService.resetAgentBrainLlmClient();
 
   console.log("\n==========================================================");
-  console.log(`ALL ${testsPassed} LANGGRAPH FRAMEWORK AGENT TESTS PASSED!`);
+  console.log(`ALL ${testsPassed} LANGGRAPH AGENT ACCEPTANCE TESTS PASSED!`);
   console.log("ZERO OLLAMA / REAL INFERENCE WAS EXECUTED.");
   console.log("==========================================================");
 }
