@@ -19,12 +19,20 @@ const SLASH_COMMANDS = [
   },
   {
     command: "/agent",
-    label: "Agent Workflow",
-    description: "Multi-step reasoning with tool use and computation",
+    label: "Custom Agent",
+    description: "Custom Agent Foundation multi-step reasoning with tools",
     icon: Sparkles,
-    badge: "Agent",
+    badge: "Custom",
+  },
+  {
+    command: "/framework-agent",
+    label: "LangGraph Agent",
+    description: "LangGraph state-machine multi-step reasoning with tools",
+    icon: Sparkles,
+    badge: "LangGraph",
   },
 ];
+
 
 const InputArea = ({
   input,
