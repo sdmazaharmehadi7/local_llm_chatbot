@@ -159,7 +159,7 @@ export async function runAgentTask({
   const isStreamingRequested = typeof options.onChunk === "function";
   if (isStreamingRequested && finalAnswer) {
     const isMockBrain = typeof agentGraphService.brainLlmClient === "function";
-    if (!isMockBrain) {
+    if (!isMockBrain && finalGraphState.steps?.length > 0) {
       try {
         const retrievalSteps = (finalGraphState.steps || []).filter(
           (s) => s.toolName === "retrieve_information" || s.tool === "retrieve_information"
