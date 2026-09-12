@@ -20,6 +20,7 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import calculatorTool from "./tools/calculator.tool.js";
 import textTransformTool from "./tools/textTransform.tool.js";
 import retrievalTool from "./tools/retrieval.tool.js";
+import codingTool from "./tools/coding.tool.js";
 
 /**
  * Zod schema for calculator tool
@@ -81,6 +82,24 @@ export const RetrievalSchema = z.object({
 });
 
 /**
+ * Zod schema for coding tool (Qwen2.5-Coder)
+ */
+export const CodingSchema = z.object({
+  task: z
+    .string()
+    .min(1, "Task description must not be empty")
+    .describe("The programming, function implementation, algorithm, or code debugging task to perform."),
+  language: z
+    .string()
+    .optional()
+    .describe("Optional target programming language (e.g. 'java', 'javascript', 'python', 'cpp', 'typescript', 'go', 'rust', 'csharp')."),
+  codeContext: z
+    .string()
+    .optional()
+    .describe("Optional existing code snippet or context to analyze, refactor, or debug."),
+});
+
+/**
  * Factory creating LangChain StructuredTool instances bound to caller context.
  *
  * @param {object} [context={}]
@@ -88,6 +107,7 @@ export const RetrievalSchema = z.object({
  * @param {string} [context.chatId]
  * @param {string} [context.workspaceId]
  * @param {Function} [context.retriever]
+ * @param {Function} [context.coderClient]
  * @returns {Array<DynamicStructuredTool>}
  */
 export function createAgentTools(context = {}) {
@@ -124,7 +144,18 @@ export function createAgentTools(context = {}) {
     },
   });
 
-  return [calcTool, textTool, retrieveTool];
+  const codeTool = new DynamicStructuredTool({
+    name: "coding",
+    description:
+      "Generates, implements, refactors, or debugs code using specialized Qwen2.5-Coder. Use ONLY when the user explicitly requests writing code, implementing a software function/class/algorithm, generating a script, or technical code debugging. Do NOT use for general questions, conceptual explanations (e.g. 'Explain what an API is'), math, or document retrieval.",
+    schema: CodingSchema,
+    func: async (input) => {
+      const res = await codingTool.execute(input, context);
+      return JSON.stringify(res);
+    },
+  });
+
+  return [calcTool, textTool, retrieveTool, codeTool];
 }
 
 /**
@@ -167,6 +198,7 @@ export default {
   CalculatorSchema,
   TextTransformSchema,
   RetrievalSchema,
+  CodingSchema,
   createAgentTools,
   getAgentToolsMetadata,
 };

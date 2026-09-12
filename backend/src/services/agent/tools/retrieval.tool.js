@@ -107,20 +107,56 @@ export const retrievalTool = {
     });
 
     const content = retrievalResult?.content || "";
-    const sources = Array.isArray(retrievalResult?.sources) ? retrievalResult.sources : [];
-    const results = Array.isArray(retrievalResult?.results) ? retrievalResult.results : [];
+    const rawSources = Array.isArray(retrievalResult?.sources) ? retrievalResult.sources : [];
+    const rawResults = Array.isArray(retrievalResult?.results) ? retrievalResult.results : [];
+
+    // Normalize each result into a structured chunk record
+    const structuredResults = rawResults.map((r) => {
+      const filename = r.filename || r.sourceName || r.title || r.name || "Document";
+      const page = r.page !== undefined ? r.page : (r.pageNumber !== undefined ? r.pageNumber : 1);
+      const score = typeof r.score === "number" ? r.score : (typeof r.similarity === "number" ? r.similarity : null);
+      const docId = r.documentId || r.id || "doc";
+      const chunkIdx = r.chunkIndex !== undefined ? r.chunkIndex : 0;
+      const text = r.text || r.content || content || "";
+
+      return {
+        text,
+        filename,
+        sourceName: filename,
+        documentId: docId,
+        page,
+        score,
+        metadata: {
+          documentId: docId,
+          filename,
+          page,
+          chunkIndex: chunkIdx,
+          source: r.source || "knowledge_base",
+          ...(r.metadata || {}),
+        },
+      };
+    });
+
+    // Normalize sources list
+    const structuredSources = rawSources.map((s) => ({
+      documentId: s.documentId || s.id || null,
+      filename: s.filename || s.name || "Document",
+      page: s.page !== undefined ? s.page : (s.pages ? s.pages[0] : 1),
+      pages: Array.isArray(s.pages) ? s.pages : (s.page !== undefined ? [s.page] : [1]),
+      score: typeof s.score === "number" ? s.score : null,
+    }));
 
     return {
       success: retrievalResult?.success !== false,
       query: retrievalResult?.query || query,
       content,
-      sources,
-      results,
-      resultCount: results.length || sources.length,
+      sources: structuredSources,
+      results: structuredResults,
+      resultCount: structuredResults.length || structuredSources.length,
       hasContext:
         retrievalResult?.hasContext !== undefined
           ? retrievalResult.hasContext
-          : Boolean(content || results.length > 0),
+          : Boolean(content || structuredResults.length > 0),
       ...(retrievalResult?.error ? { error: retrievalResult.error } : {}),
     };
   },

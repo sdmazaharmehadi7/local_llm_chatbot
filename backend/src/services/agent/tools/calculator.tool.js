@@ -322,13 +322,21 @@ export const calculatorTool = {
   },
   permissions: [],
   execute: async (input) => {
-    const { expression } = input || {};
-    const value = evaluateSafeExpression(expression);
-    return {
-      expression,
-      value,
-      formatted: String(value),
-    };
+    try {
+      const { expression } = input || {};
+      const value = evaluateSafeExpression(expression);
+      return {
+        success: true,
+        expression,
+        value,
+        formatted: String(value),
+      };
+    } catch (err) {
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
   },
 };
 

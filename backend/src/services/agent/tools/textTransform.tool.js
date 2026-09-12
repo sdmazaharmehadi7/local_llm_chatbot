@@ -93,71 +93,88 @@ export const textTransformTool = {
   },
   permissions: [],
   execute: async (input) => {
-    const { text = "", operation, options = {} } = input;
+    try {
+      const { text = "", operation, options = {} } = input || {};
 
-    switch (operation) {
-      case "uppercase": {
-        const transformed = text.toUpperCase();
-        return {
-          operation,
-          result: transformed,
-          length: transformed.length,
-        };
+      switch (operation) {
+        case "uppercase": {
+          const transformed = text.toUpperCase();
+          return {
+            success: true,
+            operation,
+            result: transformed,
+            length: transformed.length,
+          };
+        }
+        case "lowercase": {
+          const transformed = text.toLowerCase();
+          return {
+            success: true,
+            operation,
+            result: transformed,
+            length: transformed.length,
+          };
+        }
+        case "word_count": {
+          const words = text.trim().split(/\s+/).filter(Boolean);
+          const count = text.trim().length === 0 ? 0 : words.length;
+          return {
+            success: true,
+            operation,
+            wordCount: count,
+            result: String(count),
+          };
+        }
+        case "char_count": {
+          return {
+            success: true,
+            operation,
+            charCount: text.length,
+            charCountNoSpaces: text.replace(/\s+/g, "").length,
+            result: String(text.length),
+          };
+        }
+        case "summarize": {
+          const maxSentences = Number(options.maxSentences) || 3;
+          const summary = deterministicSummarize(text, maxSentences);
+          return {
+            success: true,
+            operation,
+            summary,
+            result: summary,
+            originalLength: text.length,
+            summaryLength: summary.length,
+          };
+        }
+        case "trim": {
+          const trimmed = text.trim();
+          return {
+            success: true,
+            operation,
+            result: trimmed,
+            length: trimmed.length,
+          };
+        }
+        case "reverse": {
+          const reversed = Array.from(text).reverse().join("");
+          return {
+            success: true,
+            operation,
+            result: reversed,
+            length: reversed.length,
+          };
+        }
+        default:
+          return {
+            success: false,
+            error: `Unhandled or unsupported operation: "${operation}"`,
+          };
       }
-      case "lowercase": {
-        const transformed = text.toLowerCase();
-        return {
-          operation,
-          result: transformed,
-          length: transformed.length,
-        };
-      }
-      case "word_count": {
-        const words = text.trim().split(/\s+/).filter(Boolean);
-        const count = text.trim().length === 0 ? 0 : words.length;
-        return {
-          operation,
-          wordCount: count,
-          result: String(count),
-        };
-      }
-      case "char_count": {
-        return {
-          operation,
-          charCount: text.length,
-          charCountNoSpaces: text.replace(/\s+/g, "").length,
-          result: String(text.length),
-        };
-      }
-      case "summarize": {
-        const maxSentences = Number(options.maxSentences) || 3;
-        const summary = deterministicSummarize(text, maxSentences);
-        return {
-          operation,
-          summary,
-          result: summary,
-          originalLength: text.length,
-          summaryLength: summary.length,
-        };
-      }
-      case "trim": {
-        const trimmed = text.trim();
-        return {
-          operation,
-          result: trimmed,
-          length: trimmed.length,
-        };
-      }
-      case "reverse": {
-        const reversed = Array.from(text).reverse().join("");
-        return {
-          operation,
-          result: reversed,
-          length: reversed.length,
-        };
-      }
-      default:
-        throw new Error(`Unhandled operation: "${operation}"`);
+    } catch (err) {
+      return {
+        success: false,
+        error: err.message,
+      };
     }
   },
 };

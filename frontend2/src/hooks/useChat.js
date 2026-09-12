@@ -348,8 +348,13 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
             content: responseText,
             model: "agent",
             metadata:
-              agentResult?.steps?.length > 0
-                ? { steps: agentResult.steps, taskId: agentResult.taskId }
+              agentResult?.steps?.length > 0 || agentResult?.sources?.length > 0
+                ? {
+                    steps: agentResult?.steps || [],
+                    taskId: agentResult?.taskId,
+                    ragSources: agentResult?.sources || agentResult?.ragSources || [],
+                    sources: agentResult?.sources || agentResult?.ragSources || [],
+                  }
                 : null,
             createdAt: Date.now(),
           },

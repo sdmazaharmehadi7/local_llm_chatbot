@@ -90,6 +90,7 @@ export async function runAgentTask({
   const app = agentGraphService.buildGraph({
     onProgress: emitProgress,
     retriever: options.retriever,
+    coderClient: options.coderClient,
     signal: options.signal,
   });
 
@@ -125,15 +126,64 @@ export async function runAgentTask({
 
   let finalAnswer = finalGraphState.finalResponse || "";
 
+  // Aggregate retrieved document sources across steps
+  const extractedSources = [];
+  const seenSourceKeys = new Set();
+  for (const step of finalGraphState.steps || []) {
+    const isRetrieval = step.toolName === "retrieve_information" || step.tool === "retrieve_information";
+    if (isRetrieval) {
+      const obs = step.observation || {};
+      const sourcesList = Array.isArray(obs.sources)
+        ? obs.sources
+        : (Array.isArray(obs.results) ? obs.results : []);
+
+      for (const src of sourcesList) {
+        const docId = src.documentId || src.id || src.filename;
+        const page = src.page !== undefined ? src.page : (src.pages ? src.pages[0] : 1);
+        const key = `${docId}:::${page}`;
+        if (!seenSourceKeys.has(key)) {
+          seenSourceKeys.add(key);
+          extractedSources.push({
+            documentId: src.documentId || src.id || "doc",
+            filename: src.filename || src.sourceName || "Document",
+            page,
+            pages: Array.isArray(src.pages) ? src.pages : [page],
+            score: typeof src.score === "number" ? src.score : null,
+          });
+        }
+      }
+    }
+  }
+
   // Stream answer chunks if requested and answer is available
   const isStreamingRequested = typeof options.onChunk === "function";
   if (isStreamingRequested && finalAnswer) {
     const isMockBrain = typeof agentGraphService.brainLlmClient === "function";
     if (!isMockBrain && finalGraphState.steps?.length > 0) {
       try {
-        const streamPrompt = `You are Sovereign Agent. Provide a direct, well-structured final answer to the user based on these tool results:
+        let streamPrompt;
+        if (extractedSources.length > 0) {
+          const retrievalSteps = finalGraphState.steps.filter(
+            (s) => s.toolName === "retrieve_information" || s.tool === "retrieve_information"
+          );
+          const documentContext = retrievalSteps
+            .map((s) => s.observation?.content || JSON.stringify(s.observation?.results || []))
+            .join("\n\n");
+
+          streamPrompt = `You are Sovereign Agent. Answer the user's question using ONLY the retrieved document information below.
+Cite document titles and page numbers clearly. Do not assume or invent facts outside the retrieved excerpts.
+
+User: "${message}"
+
+Retrieved Document Excerpts:
+${documentContext}
+
+Provide a direct, complete, and grounded answer to the user.`;
+        } else {
+          streamPrompt = `You are Sovereign Agent. Provide a direct, well-structured final answer to the user based on these tool results:
 User: "${message}"
 Tool results: ${JSON.stringify(finalGraphState.steps.map((s) => s.observation))}`;
+        }
 
         const { stream: ollamaStream } = await streamChatFromOllama(
           [{ role: "user", content: streamPrompt }],
@@ -210,6 +260,8 @@ Tool results: ${JSON.stringify(finalGraphState.steps.map((s) => s.observation))}
     status: isSuccess ? "completed" : "failed",
     response: finalAnswer,
     steps: finalGraphState.steps || [],
+    sources: extractedSources,
+    ragSources: extractedSources,
     events: progressEvents,
     executionTimeMs: totalExecutionTimeMs,
     ...(finalGraphState.error ? { error: finalGraphState.error } : {}),
