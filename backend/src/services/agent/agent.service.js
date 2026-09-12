@@ -159,30 +159,57 @@ export async function runAgentTask({
   const isStreamingRequested = typeof options.onChunk === "function";
   if (isStreamingRequested && finalAnswer) {
     const isMockBrain = typeof agentGraphService.brainLlmClient === "function";
-    if (!isMockBrain && finalGraphState.steps?.length > 0) {
+    if (!isMockBrain) {
       try {
-        let streamPrompt;
-        if (extractedSources.length > 0) {
-          const retrievalSteps = finalGraphState.steps.filter(
-            (s) => s.toolName === "retrieve_information" || s.tool === "retrieve_information"
-          );
+        const retrievalSteps = (finalGraphState.steps || []).filter(
+          (s) => s.toolName === "retrieve_information" || s.tool === "retrieve_information"
+        );
+        const otherSteps = (finalGraphState.steps || []).filter(
+          (s) => s.toolName !== "retrieve_information" && s.tool !== "retrieve_information"
+        );
+
+        const promptSections = [];
+        if (retrievalSteps.length > 0) {
           const documentContext = retrievalSteps
             .map((s) => s.observation?.content || JSON.stringify(s.observation?.results || []))
             .join("\n\n");
+          promptSections.push(`Retrieved Document Excerpts:\n${documentContext}`);
+        }
 
-          streamPrompt = `You are Sovereign Agent. Answer the user's question using ONLY the retrieved document information below.
-Cite document titles and page numbers clearly. Do not assume or invent facts outside the retrieved excerpts.
+        if (otherSteps.length > 0) {
+          const toolResults = otherSteps
+            .map((s, idx) => {
+              const name = s.toolName || s.tool;
+              const inputStr = s.input?.expression || s.input?.task || JSON.stringify(s.input || {});
+              const val =
+                s.observation?.value !== undefined
+                  ? s.observation.value
+                  : (s.observation?.result !== undefined
+                  ? s.observation.result
+                  : JSON.stringify(s.observation || ""));
+              return `Tool ${idx + 1} (${name}): Input: ${inputStr} -> Result: ${val}`;
+            })
+            .join("\n");
+          promptSections.push(`Tool Execution & Calculation Results:\n${toolResults}`);
+        }
 
-User: "${message}"
+        if (finalAnswer) {
+          promptSections.push(`Agent Findings & Solution:\n${finalAnswer}`);
+        }
 
-Retrieved Document Excerpts:
-${documentContext}
+        let streamPrompt;
+        if (promptSections.length > 0) {
+          streamPrompt = `You are Sovereign Agent. Deliver a direct, well-structured, and complete final answer to the user based on the findings below.
+Cite document titles, section/page numbers, and calculation formulas clearly.
 
-Provide a direct, complete, and grounded answer to the user.`;
+User Question: "${message}"
+
+${promptSections.join("\n\n")}
+
+Provide the complete final answer.`;
         } else {
-          streamPrompt = `You are Sovereign Agent. Provide a direct, well-structured final answer to the user based on these tool results:
-User: "${message}"
-Tool results: ${JSON.stringify(finalGraphState.steps.map((s) => s.observation))}`;
+          streamPrompt = `You are Sovereign Agent. Provide a direct and complete answer to the user's question:
+User Question: "${message}"`;
         }
 
         const { stream: ollamaStream } = await streamChatFromOllama(
@@ -232,7 +259,8 @@ Tool results: ${JSON.stringify(finalGraphState.steps.map((s) => s.observation))}
         if (streamedAnswer.trim()) {
           finalAnswer = streamedAnswer;
         }
-      } catch {
+      } catch (streamErr) {
+        console.warn("[agent.service] Streaming final answer from Ollama failed, falling back to buffered answer:", streamErr.message);
         options.onChunk({ text: finalAnswer });
       }
     } else {
@@ -254,6 +282,21 @@ Tool results: ${JSON.stringify(finalGraphState.steps.map((s) => s.observation))}
   const totalExecutionTimeMs = Date.now() - startTime;
   console.log(`[agent] LangGraph task finished: ${taskId} (${isSuccess ? "COMPLETED" : "FAILED"})`);
 
+  const structuredState = {
+    user_query: message.trim(),
+    messages: conversationHistory,
+    tool_results: (finalGraphState.steps || []).map((s) => s.observation),
+    retrieved_facts: finalGraphState.retrievedFacts || [],
+    completed_steps: (finalGraphState.steps || []).map((s) => ({
+      tool: s.toolName || s.tool,
+      input: s.input,
+      observation: s.observation,
+      status: s.status,
+    })),
+    remaining_information: finalGraphState.remainingInformation || [],
+    iteration_count: (finalGraphState.steps || []).length,
+  };
+
   return {
     success: isSuccess,
     taskId,
@@ -264,6 +307,7 @@ Tool results: ${JSON.stringify(finalGraphState.steps.map((s) => s.observation))}
     ragSources: extractedSources,
     events: progressEvents,
     executionTimeMs: totalExecutionTimeMs,
+    state: structuredState,
     ...(finalGraphState.error ? { error: finalGraphState.error } : {}),
   };
 }

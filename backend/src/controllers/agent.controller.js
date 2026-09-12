@@ -54,6 +54,9 @@ export async function createAgentTask(req, res) {
               ? { type: eventName, ...data }
               : { type: eventName, value: data };
           res.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
+          if (typeof res.flush === "function") {
+            res.flush();
+          }
         }
       };
 

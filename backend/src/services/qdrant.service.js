@@ -392,10 +392,6 @@ export async function searchKnowledgeBasePoints({
     mustFilters.push({ key: "workspaceId", match: { value: String(workspaceId) } });
   }
 
-  if (userId) {
-    mustFilters.push({ key: "userId", match: { value: String(userId) } });
-  }
-
   const searchPayload = {
     vector,
     limit,

@@ -20,7 +20,6 @@ export const AGENT_BRAIN_SYSTEM_PROMPT = `You are the decision-making brain of a
 You do not execute tools yourself.
 You can only request tools from the provided tool registry.
 Return exactly one structured JSON action.
-Choose a tool ONLY when strictly necessary.
 Return final when the task is complete or can be answered directly.
 Never invent tools.
 Never output hidden reasoning.
@@ -38,17 +37,35 @@ If task is complete or can be answered directly without tools:
 {
   "action": "final",
   "reason": "<short 1-sentence summary of reasoning>",
-  "answer": "<final answer for user>"
+  "answer": "<final answer for user with citations and calculation steps>"
 }
 
-Strict Agent Tool Selection Policy:
-1. MINIMAL TOOL USAGE: Use the minimum number of tools strictly necessary. If a question can be answered using general knowledge, conversational response, or already observed context, return "final" immediately without calling any tools.
-2. NO UNRELATED TOOL CALLS: Do not call a tool simply because it is available. Never call calculator or text_transform on questions that do not specifically require them.
-3. RETRIEVAL POLICY: Call "retrieve_information" when the user asks about specific documents, files, manuals, SOPs, policies, procedures, regulations, safety requirements, or domain facts that must be looked up in the Knowledge Base or chat attachments. Do NOT call retrieve_information for general conversational questions, system identity or purpose questions (e.g. "What is the purpose of this system?"), or standard math/text tasks.
-4. CALCULATOR POLICY: Call "calculator" ONLY when explicit mathematical computation or arithmetic evaluation is required (e.g. +, -, *, /, %, equations, formulas, or computing numbers from retrieved data). Do NOT call calculator for non-mathematical, text, or document questions.
-5. TEXT TRANSFORM POLICY: Call "text_transform" ONLY when the user explicitly requests text formatting or manipulation (e.g. uppercase, lowercase, word count, character count, reverse, trim). Do NOT call text_transform to answer questions or process queries.
-6. CODING POLICY: Call "coding" ONLY when the user explicitly requests writing, implementing, generating, refactoring, or debugging code or software functions (e.g. "Write a Java function to reverse a string", "Implement binary search in Python", "Debug this script"). Do NOT call "coding" for general, conceptual, architectural, or definition questions (e.g. "Explain what an API is", "What is OOP?"), general questions, arithmetic, or document retrieval.
-7. MULTI-STEP ORDER: When a request requires both document information and mathematical calculation, FIRST retrieve the necessary data using "retrieve_information", observe the result, and THEN call "calculator" on the retrieved numbers. Never invert this order.
+Iterative Multi-Step Reasoning Policy:
+1. ITERATIVE EXECUTION: The agent operates in an iterative loop: Tool -> Observation -> Next Action. Do NOT assume that one tool call is enough. After every tool execution, evaluate whether the user's question has been completely answered.
+2. DISTINGUISH CAPABILITIES:
+   - Information Retrieval: Use "retrieve_information" to search and retrieve facts, procedures, limits, and data from documents.
+   - Computation: Use "calculator" for any arithmetic, percentages, differentials, ratios, or formulas.
+   - Final Response: Return "final" only when all required information has been gathered and all computations/comparisons are completed.
+3. MULTI-PART QUESTION DECOMPOSITION & SEQUENTIAL RETRIEVAL:
+   - When a user request requires multiple distinct pieces of information (e.g., "Using Value A and Limit B, calculate C"):
+     * First retrieve Value A using a focused query (e.g. "drive-end bearing vibration reading").
+     * Inspect the returned excerpt to extract Value A.
+     * If Limit B is still missing, call "retrieve_information" with a NEW, FOCUSED query specifically for Limit B (e.g. "ISO 10816-3 limit Zone B/C boundary").
+     * CRITICAL: NEVER repeat an identical retrieval query that was already executed in a previous step!
+4. ARITHMETIC & CALCULATOR POLICY:
+   - Call "calculator" whenever mathematical computation or arithmetic is required (e.g. percentage of allowable limit, pressure differential, flow reductions).
+   - Once all required numerical values are retrieved (e.g. vibration = 3.1 and limit = 4.5), DO NOT continue retrieving! You MUST transition to "calculator" with the numerical expression (e.g. "(3.1 / 4.5) * 100").
+   - Never perform mental arithmetic when calculator is available.
+5. MULTI-STEP WORKFLOW ORDER:
+   - When a request requires both document lookup and calculation: FIRST retrieve the data using "retrieve_information", inspect the returned values/tags, and THEN call "calculator" on the numbers.
+   - Once all numbers are calculated, return "final" synthesizing the complete answer.
+6. THRESHOLD COMPARISON & PASS/FAIL CRITERIA:
+   - When the user asks a verification question (e.g., "Does it pass?"): after calculating the result, compare it against the threshold/allowable limit in the final answer (e.g. 68.9% <= 100% -> PASS).
+7. MINIMAL & PURPOSEFUL TOOL USAGE:
+   - If a question is general conversation or conceptual (e.g. "Explain what an API is"), answer directly without tools.
+   - Do not call calculator or text_transform on questions that do not need them.
+8. EVIDENCE & CITATIONS:
+   - When returning "final", cite document names, page numbers, instrument/tag identifiers (e.g. PI-102B, bearing tag), and explicit calculation steps.
 
 Strict Constraints:
 1. Return ONLY the raw JSON object. Never include markdown code fences, comments, or thinking tags.
@@ -141,6 +158,15 @@ export function formatStepHistory(steps = []) {
 ${boundedExcerpts}`;
       }
 
+      // Format calculator observations
+      if (toolName === "calculator" && typeof obs === "object" && obs !== null) {
+        const expr = obs.expression || s.input?.expression || "";
+        const val = obs.value !== undefined ? obs.value : (obs.formatted || obs.result || JSON.stringify(obs));
+        return `Step ${idx + 1}:
+  Action: Called tool "calculator" with expression: "${expr}"
+  Observation${statusText}: Calculation result: ${expr} = ${val}`;
+      }
+
       // Format coding tool observations
       if (toolName === "coding" && typeof obs === "object" && obs !== null) {
         const lang = obs.language || "code";
@@ -160,6 +186,123 @@ ${boundedCode}`;
   Observation${statusText}: ${boundedObs}`;
     })
     .join("\n\n");
+}
+
+/**
+ * Format accumulated retrieved evidence across all steps into a structured,
+ * model-readable document context block, analogous to the working attachment flow.
+ *
+ * @param {object} state
+ * @returns {string}
+ */
+export function formatAccumulatedEvidence(state = {}) {
+  const facts = state.retrievedFacts || [];
+  const steps = state.steps || [];
+
+  const allItems = [];
+
+  // 1. First include explicit facts in state.retrievedFacts
+  if (Array.isArray(facts) && facts.length > 0) {
+    for (const f of facts) {
+      allItems.push({
+        query: f.query || "",
+        source: f.source || f.filename || "Document",
+        page: f.page || 1,
+        text: (f.text || f.content || "").trim(),
+      });
+    }
+  }
+
+  // 2. Also inspect steps to ensure zero retrieval results are dropped
+  for (const s of steps) {
+    if ((s.toolName || s.tool) === "retrieve_information" && s.observation) {
+      const obs = s.observation;
+      const q = s.input?.query || "";
+      if (Array.isArray(obs.results)) {
+        for (const r of obs.results) {
+          allItems.push({
+            query: q,
+            source: r.filename || r.sourceName || r.source || "Document",
+            page: r.page || 1,
+            text: (r.text || r.content || "").trim(),
+          });
+        }
+      } else if (obs.content) {
+        allItems.push({
+          query: q,
+          source: "Document",
+          page: 1,
+          text: obs.content.trim(),
+        });
+      }
+    }
+  }
+
+  if (allItems.length === 0) {
+    return "No document evidence has been retrieved yet.";
+  }
+
+  // Deduplicate by source + page + first 60 chars of text
+  const seenKeys = new Set();
+  const uniqueItems = [];
+  for (const item of allItems) {
+    if (!item.text) continue;
+    const key = `${item.source}:::p${item.page}:::${item.text.slice(0, 60)}`;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      uniqueItems.push(item);
+    }
+  }
+
+  if (uniqueItems.length === 0) {
+    return "No document evidence has been retrieved yet.";
+  }
+
+  return uniqueItems
+    .map((item, idx) => {
+      const queryTag = item.query ? ` | Query: "${item.query}"` : "";
+      return `[Evidence #${idx + 1} | Document: ${item.source}, Page: ${item.page}${queryTag}]\n${item.text}`;
+    })
+    .join("\n\n---\n\n");
+}
+
+/**
+ * Format active reasoning state to clearly present executed queries,
+ * retrieved facts, and completed calculations to the Agent Brain.
+ *
+ * @param {object} state
+ * @returns {string}
+ */
+export function formatReasoningState(state = {}) {
+  const steps = state.steps || [];
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return "Initial Step: No tools have been executed yet.";
+  }
+
+  const retrievalSteps = steps.filter((s) => (s.toolName || s.tool) === "retrieve_information");
+  const calculatorSteps = steps.filter((s) => (s.toolName || s.tool) === "calculator");
+
+  const lines = [];
+
+  if (retrievalSteps.length > 0) {
+    lines.push("Previous Retrieval Queries Already Performed:");
+    retrievalSteps.forEach((s, idx) => {
+      const q = s.input?.query || JSON.stringify(s.input || {});
+      lines.push(`  - Query ${idx + 1}: "${q}"`);
+    });
+    lines.push("  -> CRITICAL: DO NOT repeat any of the above queries. If more data is needed, formulate a NEW, FOCUSED query for the specific missing item.");
+  }
+
+  if (calculatorSteps.length > 0) {
+    lines.push("\nCompleted Calculations:");
+    calculatorSteps.forEach((s, idx) => {
+      const expr = s.input?.expression || "";
+      const val = s.observation?.value !== undefined ? s.observation.value : (s.observation?.formatted || JSON.stringify(s.observation));
+      lines.push(`  - Calc ${idx + 1}: ${expr} = ${val}`);
+    });
+  }
+
+  return lines.join("\n");
 }
 
 /**
@@ -305,7 +448,7 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
   const steps = taskState.steps || [];
 
   const isDocumentQuestion =
-    /\b(document|documents|file|files|pdf|sop|manual|manuals|policy|policies|procedure|procedures|regulation|regulations|safety requirement|safety requirements|prv|cdu|crude distillation|valve|inspection interval|acceptance criteria)\b/i.test(
+    /\b(document|documents|file|files|pdf|sop|manual|manuals|policy|policies|procedure|procedures|regulation|regulations|safety requirement|safety requirements|prv|cdu|crude distillation|valve|inspection interval|acceptance criteria|report|reports|inspection|equipment|pump|discharge|suction|pressure|flow rate|temperature|transmitter)\b/i.test(
       userRequest
     );
 
@@ -371,6 +514,29 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
         reason: `retrieve_information is not needed for general conversational or system identity questions when no document context is requested.`,
       };
     }
+
+    // Anti-repetition: Prevent identical retrieval query loops
+    const currentQuery = String(decision.input?.query || "").trim().toLowerCase();
+    const cleanCurrent = currentQuery.replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+    if (cleanCurrent) {
+      const prevQueries = steps
+        .filter((s) => (s.toolName || s.tool) === "retrieve_information")
+        .map((s) =>
+          String(s.input?.query || "")
+            .trim()
+            .toLowerCase()
+            .replace(/[^\w\s]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+        );
+
+      if (prevQueries.includes(cleanCurrent)) {
+        return {
+          valid: false,
+          reason: `Duplicate retrieval query: "${decision.input?.query}" was already searched in a previous step. Do not repeat identical queries; specify a new focused query for any missing value or proceed to calculation.`,
+        };
+      }
+    }
   }
 
   // 5. CODING POLICY GUARD:
@@ -408,6 +574,8 @@ export default {
   AGENT_BRAIN_SYSTEM_PROMPT,
   formatAvailableTools,
   formatStepHistory,
+  formatAccumulatedEvidence,
+  formatReasoningState,
   parseBrainOutput,
   validateToolSelectionPolicy,
 };

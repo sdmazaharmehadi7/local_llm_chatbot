@@ -25,12 +25,41 @@ import {
   validateToolSelectionPolicy,
   formatAvailableTools,
   formatStepHistory,
+  formatAccumulatedEvidence,
+  formatReasoningState,
   AGENT_BRAIN_SYSTEM_PROMPT,
 } from "./qwenBrain.service.js";
 
 // Disable LangChain tracing/telemetry globally
 if (typeof process !== "undefined" && process.env) {
   process.env.LANGCHAIN_TRACING_V2 = "false";
+}
+
+/**
+ * Normalize an action fingerprint for stuck loop and duplicate query detection.
+ *
+ * @param {string} toolName
+ * @param {object} input
+ * @returns {string}
+ */
+export function normalizeActionFingerprint(toolName, input = {}) {
+  const normTool = String(toolName || "").trim().toLowerCase();
+  if (normTool === "retrieve_information") {
+    const rawQuery = String(input?.query || input?.searchTerm || "").trim().toLowerCase();
+    const cleanQuery = rawQuery.replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+    const scope = String(input?.sourceScope || "all").trim().toLowerCase();
+    return `${normTool}:::query=${cleanQuery}:::scope=${scope}`;
+  }
+  if (normTool === "calculator") {
+    const rawExpr = String(input?.expression || "").replace(/\s+/g, "").toLowerCase();
+    return `${normTool}:::expr=${rawExpr}`;
+  }
+  if (normTool === "text_transform") {
+    const op = String(input?.operation || "").trim().toLowerCase();
+    const text = String(input?.text || "").trim();
+    return `${normTool}:::op=${op}:::text=${text}`;
+  }
+  return `${normTool}:::${JSON.stringify(input || {})}`;
 }
 
 /**
@@ -49,6 +78,11 @@ export const AgentStateAnnotation = Annotation.Root({
   currentAction: Annotation({ reducer: (_, y) => y, default: () => null }),
   finalResponse: Annotation({ reducer: (_, y) => y, default: () => "" }),
   error: Annotation({ reducer: (_, y) => y, default: () => null }),
+  retrievedFacts: Annotation({
+    reducer: (x, y) => (Array.isArray(y) ? x.concat(y) : (y ? [...x, y] : x)),
+    default: () => [],
+  }),
+  remainingInformation: Annotation({ reducer: (_, y) => y, default: () => [] }),
 });
 
 class AgentGraphService {
@@ -177,23 +211,41 @@ class AgentGraphService {
       );
 
       const formattedHistory = formatStepHistory(state.steps);
+      const accumulatedEvidence = formatAccumulatedEvidence(state);
+      const reasoningState = formatReasoningState(state);
 
       const promptContent = `User Request: "${state.userRequest}"
 
 Available Tools:
 ${formattedTools}
 
-Previous Execution Steps & Observations:
+ACCUMULATED RETRIEVED DOCUMENT EVIDENCE (KNOWLEDGE BASE & ATTACHMENTS):
+---
+${accumulatedEvidence}
+---
+
+Previous Execution Steps:
 ${formattedHistory}
+
+Current Knowledge & Query State:
+${reasoningState}
 
 Current Step: ${state.steps.length + 1} of ${AGENT_LIMITS.MAX_AGENT_STEPS}
 
-Decide the next action now. Remember the strict tool selection rules:
-- Minimal tool usage: return "final" if answerable directly.
-- Calculator: ONLY for explicit arithmetic computation.
-- Text transform: ONLY for explicit string transformation operations.
-- Retrieval: ONLY for document, manual, SOP, or policy questions.
-- Multi-step: When documents contain numbers that require calculation, retrieve first, then calculate.
+Decide the next action now based on the accumulated evidence and the original user request:
+1. Multi-Part Question & Missing Information Check:
+   - Does "${state.userRequest}" require multiple values (e.g. Value A and Limit B)?
+   - What is ALREADY KNOWN from the ACCUMULATED EVIDENCE above?
+   - What is STILL MISSING to answer the question?
+   - If another value or limit is still needed, call "retrieve_information" with a NEW, FOCUSED query specifically for the missing item (e.g. "ISO 10816-3 Zone B/C boundary allowable limit").
+   - CRITICAL: Never repeat an identical query that has already been executed!
+2. Calculation Check:
+   - If all required numbers are now retrieved in the accumulated evidence (e.g. measured vibration = 3.1 and allowable limit = 4.5), DO NOT retrieve again!
+   - Transition immediately to "calculator" with the numerical expression (e.g. "(3.1 / 4.5) * 100").
+3. Final Answer & Evaluation Check:
+   - If all values are known and all computations are completed:
+   - If a verification or pass/fail question was asked (e.g. "Does it pass?"), compare the calculated percentage against the allowable threshold (e.g. 68.9% <= 100% -> PASS).
+   - Return "final" citing document sources, numerical values, and calculation steps.
 
 Return ONLY a valid JSON object matching the Response Schema.`;
 
@@ -246,13 +298,41 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         };
       }
 
-      const decision = parsed.decision;
+      let decision = parsed.decision;
 
       // Validate tool selection policy against unneeded tool calls
-      const policyValidation = validateToolSelectionPolicy(decision, {
+      let policyValidation = validateToolSelectionPolicy(decision, {
         userRequest: state.userRequest,
         steps: state.steps,
       });
+
+      // Single-turn self-correction retry on policy rejection (e.g. duplicate query proposed)
+      if (!policyValidation.valid) {
+        try {
+          const retryMessages = [
+            ...messages,
+            { role: "assistant", content: rawOutput || "" },
+            {
+              role: "user",
+              content: `Policy Guidance: ${policyValidation.reason} Please output a corrected JSON action.`,
+            },
+          ];
+          const retryOutput = await this._callBrainLlm(retryMessages);
+          const retryParsed = parseBrainOutput(retryOutput);
+          if (retryParsed.valid) {
+            const retryValidation = validateToolSelectionPolicy(retryParsed.decision, {
+              userRequest: state.userRequest,
+              steps: state.steps,
+            });
+            if (retryValidation.valid) {
+              decision = retryParsed.decision;
+              policyValidation = retryValidation;
+            }
+          }
+        } catch {
+          // retry failed, keep original validation
+        }
+      }
 
       if (!policyValidation.valid) {
         console.warn(`[agentGraph] Tool selection policy rejection: ${policyValidation.reason}`);
@@ -275,6 +355,11 @@ Return ONLY a valid JSON object matching the Response Schema.`;
       }
 
       if (decision.action === AGENT_ACTION_TYPES.FINAL) {
+        const finalStepNum = state.steps.length + 1;
+        console.log(`\n[Agent Step ${finalStepNum}]`);
+        console.log(`User task preserved: yes`);
+        console.log(`Final answer`);
+        console.log(decision.answer || decision.response || "Task completed.");
         emit({
           status: "preparing_answer",
           message: "Generating response...",
@@ -310,13 +395,13 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         };
       }
 
-      // Check stuck loop protection (consecutive identical tool calls)
-      const actionFingerprint = `${toolName}:::${JSON.stringify(decision.input || {})}`;
+      // Check stuck loop protection (consecutive identical tool calls with normalized fingerprint)
+      const actionFingerprint = normalizeActionFingerprint(toolName, decision.input);
       const recentSteps = state.steps.slice(-AGENT_LIMITS.MAX_CONSECUTIVE_IDENTICAL_ACTIONS);
       if (
         recentSteps.length >= AGENT_LIMITS.MAX_CONSECUTIVE_IDENTICAL_ACTIONS &&
         recentSteps.every(
-          (s) => `${s.tool}:::${JSON.stringify(s.input || {})}` === actionFingerprint
+          (s) => normalizeActionFingerprint(s.toolName || s.tool, s.input) === actionFingerprint
         )
       ) {
         const errMsg = `Agent stuck: detected repeated identical action for tool "${toolName}". Execution stopped safely.`;
@@ -326,6 +411,37 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           error: errMsg,
           currentAction: { action: "error", reason: errMsg },
         };
+      }
+
+      // Specific duplicate retrieval query protection across previous steps
+      const previousRetrievalFps = state.steps
+        .filter((s) => (s.toolName || s.tool) === "retrieve_information")
+        .map((s) => normalizeActionFingerprint("retrieve_information", s.input));
+
+      if (toolName === "retrieve_information" && previousRetrievalFps.includes(actionFingerprint)) {
+        const errMsg = `Agent stuck: detected repeated identical query for tool "retrieve_information" ("${decision.input?.query}"). Execution stopped safely.`;
+        emit({ status: "error", error: errMsg });
+        return {
+          status: AGENT_STATUS.FAILED,
+          error: errMsg,
+          currentAction: { action: "error", reason: errMsg },
+        };
+      }
+
+      const stepNumber = state.steps.length + 1;
+      console.log(`\n[Agent Step ${stepNumber}]`);
+      console.log(`User task preserved: yes`);
+      console.log(`Tool: ${toolName}`);
+      if (decision.input) {
+        if (toolName === "retrieve_information" && decision.input.query) {
+          console.log(`Query: ${decision.input.query}`);
+        } else if (toolName === "calculator" && decision.input.expression) {
+          console.log(`Expression: ${decision.input.expression}`);
+        } else if (toolName === "coding" && decision.input.task) {
+          console.log(`Task: ${decision.input.task}`);
+        } else {
+          console.log(`Input: ${JSON.stringify(decision.input)}`);
+        }
       }
 
       const toolActionMsg =
@@ -392,6 +508,32 @@ Return ONLY a valid JSON object matching the Response Schema.`;
               ? parsedResult.success !== false
               : true;
 
+          console.log(`\n[Tool Result]`);
+          if (toolName === "calculator") {
+            const val = parsedResult?.value !== undefined ? parsedResult.value : (parsedResult?.formatted || parsedResult);
+            console.log(val);
+          } else if (toolName === "retrieve_information") {
+            if (parsedResult?.content) {
+              const firstLine = parsedResult.content.split("\n").filter(Boolean)[0] || parsedResult.content;
+              console.log(firstLine.slice(0, 150));
+            } else if (Array.isArray(parsedResult?.results) && parsedResult.results.length > 0) {
+              const firstText = parsedResult.results[0]?.text || parsedResult.results[0]?.content || "";
+              const firstLine = firstText.split("\n").filter(Boolean)[0] || firstText;
+              console.log(firstLine.slice(0, 150));
+            } else {
+              const count = Array.isArray(parsedResult?.results)
+                ? parsedResult.results.length
+                : Array.isArray(parsedResult?.sources)
+                ? parsedResult.sources.length
+                : 0;
+              console.log(`Retrieved ${count} excerpts`);
+            }
+          } else if (toolName === "coding") {
+            console.log(`Generated code (${parsedResult?.language || "code"})`);
+          } else {
+            console.log(typeof parsedResult === "object" ? JSON.stringify(parsedResult) : String(parsedResult));
+          }
+
           const toolDoneMsg = isSuccess
             ? toolName === "retrieve_information"
               ? "✓ Knowledge retrieved"
@@ -431,6 +573,8 @@ Return ONLY a valid JSON object matching the Response Schema.`;
             executionTimeMs: Date.now() - startTime,
           };
         } catch (execErr) {
+          console.log(`[Tool Result]`);
+          console.log(`Error: ${execErr.message}`);
           emit({
             status: "tool_complete",
             tool: toolName,
@@ -451,8 +595,41 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         }
       }
 
+      let newFacts = [];
+      if (toolName === "retrieve_information" && stepRecord.status === "completed") {
+        const obs = stepRecord.observation;
+        if (Array.isArray(obs?.results) && obs.results.length > 0) {
+          newFacts = obs.results.map((r) => ({
+            query: decision.input?.query,
+            source: r.filename || r.sourceName || r.source || "Document",
+            page: r.page || 1,
+            text: r.text || r.content || "",
+            content: r.content || r.text || "",
+            score: r.score,
+          }));
+        } else if (obs?.content) {
+          newFacts = [
+            {
+              query: decision.input?.query,
+              source: "Document",
+              page: 1,
+              text: obs.content,
+              content: obs.content,
+            },
+          ];
+        }
+
+        const previousRetrievalCount = (state.steps || []).filter(
+          (s) => (s.toolName || s.tool) === "retrieve_information" && s.status === "completed"
+        ).length;
+        const currentRetrievalCount = previousRetrievalCount + 1;
+        console.log(`\n[Agent State]`);
+        console.log(`Retrieved facts/evidence count: ${currentRetrievalCount}`);
+      }
+
       return {
         steps: [stepRecord],
+        retrievedFacts: newFacts,
         toolExecutionCount: state.toolExecutionCount + 1,
         status: AGENT_STATUS.PLANNING,
       };
