@@ -106,9 +106,20 @@ export const retrievalTool = {
       limit: cappedLimit,
     });
 
-    const content = retrievalResult?.content || "";
-    const rawSources = Array.isArray(retrievalResult?.sources) ? retrievalResult.sources : [];
-    const rawResults = Array.isArray(retrievalResult?.results) ? retrievalResult.results : [];
+    const isArray = Array.isArray(retrievalResult);
+    const content = isArray
+      ? retrievalResult.map((r) => r.text || r.content || "").filter(Boolean).join("\n\n")
+      : retrievalResult?.content || "";
+    const rawSources = isArray
+      ? retrievalResult
+      : Array.isArray(retrievalResult?.sources)
+        ? retrievalResult.sources
+        : [];
+    const rawResults = isArray
+      ? retrievalResult
+      : Array.isArray(retrievalResult?.results)
+        ? retrievalResult.results
+        : [];
 
     // Normalize each result into a structured chunk record
     const structuredResults = rawResults.map((r) => {

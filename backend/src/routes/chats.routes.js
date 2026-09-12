@@ -188,7 +188,7 @@ router.post("/:id/messages", async (req, res) => {
           createdAt: messageCreatedAt,
         },
       },
-      { upsert: true, returnDocument: "after" }
+      { upsert: true, new: true, returnDocument: "after" }
     );
 
     // Update parent chat's updatedAt and title if first user message
@@ -208,7 +208,8 @@ router.post("/:id/messages", async (req, res) => {
       });
     }
 
-    res.json({ success: true, message: messageDoc, ...messageDoc.toJSON() });
+    const jsonDoc = messageDoc && typeof messageDoc.toJSON === "function" ? messageDoc.toJSON() : (messageDoc || {});
+    res.json({ success: true, message: messageDoc, ...jsonDoc });
   } catch (err) {
     console.error(`[chats.routes] Failed to save message for ${req.params.id}:`, err.message);
     res.status(500).json({ success: false, error: "Failed to save message." });

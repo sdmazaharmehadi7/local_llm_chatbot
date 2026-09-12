@@ -174,6 +174,7 @@ export const chatsClient = {
       role: message.role || "user",
       content: message.content || "",
       parts: message.parts || [{ type: "text", text: message.content || "" }],
+      fileIds: Array.isArray(message.fileIds) ? message.fileIds : [],
       createdAt: message.createdAt
         ? typeof message.createdAt === "number"
           ? new Date(message.createdAt).toISOString()
@@ -194,6 +195,9 @@ export const chatsClient = {
         body: JSON.stringify(newMsg),
       });
       const serverMsg = data?.message || data;
+      if (serverMsg && (!serverMsg.fileIds || serverMsg.fileIds.length === 0) && newMsg.fileIds?.length) {
+        serverMsg.fileIds = newMsg.fileIds;
+      }
       return serverMsg?.id ? serverMsg : newMsg;
     } catch {
       return newMsg;

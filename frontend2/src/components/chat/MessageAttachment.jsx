@@ -3,19 +3,25 @@ import { Download, File, Sparkles } from "lucide-react";
 import { API_BASE, apiFetch } from "@/lib/api";
 
 export default function MessageAttachment({ fileId }) {
+  const id = typeof fileId === "object" && fileId !== null ? fileId.id || fileId._id : fileId;
+  const initialMetadata = typeof fileId === "object" && fileId?.filename ? fileId : undefined;
+
   const {
     data: fileMetadata,
     isLoading,
     error,
   } = useQuery({
-    queryKey: ["file", fileId],
-    queryFn: () => apiFetch(`/api/files/${fileId}`),
+    queryKey: ["file", id],
+    queryFn: () => apiFetch(`/api/files/${id}`),
+    enabled: Boolean(id),
+    initialData: initialMetadata,
     staleTime: Infinity,
     gcTime: Infinity,
   });
 
   const handleDownload = () => {
-    window.open(`${API_BASE}/api/files/${fileId}/content`, "_blank");
+    if (!id) return;
+    window.open(`${API_BASE || ""}/api/files/${id}/content`, "_blank");
   };
 
   if (isLoading) {
@@ -44,7 +50,7 @@ export default function MessageAttachment({ fileId }) {
     return (
       <div className="group relative inline-block">
         <img
-          src={`${API_BASE}/api/files/${fileId}/content`}
+          src={`${API_BASE || ""}/api/files/${id}/content`}
           alt={fileMetadata.meta?.prompt || fileMetadata.filename}
           className="max-h-96 max-w-full rounded-lg shadow-md"
           loading="lazy"

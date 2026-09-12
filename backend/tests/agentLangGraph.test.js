@@ -23,6 +23,7 @@ import {
   RetrievalSchema,
   CodingSchema,
   ExecuteCodeSchema,
+  VisionSchema,
   createAgentTools,
   getAgentToolsMetadata,
 } from "../src/services/agent/agentTools.js";
@@ -199,14 +200,22 @@ async function runTests() {
   console.log("\n--- [Section 3] Tool Catalog Metadata ---");
   {
     const metadata = getAgentToolsMetadata();
-    assert.strictEqual(metadata.length, 5);
+    assert.strictEqual(metadata.length, 6);
     const names = metadata.map((m) => m.name);
     assert.ok(names.includes("calculator"));
     assert.ok(names.includes("text_transform"));
     assert.ok(names.includes("retrieve_information"));
     assert.ok(names.includes("coding"));
     assert.ok(names.includes("execute_code"));
-    pass("Tool metadata catalog lists all 5 registered tools with schema specifications");
+    assert.ok(names.includes("vision"));
+
+    // Verify VisionSchema validates correctly
+    const validVision = VisionSchema.safeParse({ prompt: "What is in this image?" });
+    assert.ok(validVision.success);
+    const invalidVision = VisionSchema.safeParse({ prompt: "" });
+    assert.strictEqual(invalidVision.success, false);
+
+    pass("Tool metadata catalog lists all 6 registered tools with schema specifications");
   }
 
   // ─── 4. TOOL SELECTION POLICY TESTS (TESTS 1 to 6) ─────────────────────────
@@ -979,7 +988,7 @@ async function runTests() {
     await listAgentTools({}, mockToolsRes);
     assert.strictEqual(toolsBody.success, true);
     assert.strictEqual(toolsBody.framework, "langgraph");
-    assert.strictEqual(toolsBody.count, 5);
+    assert.strictEqual(toolsBody.count, 6);
 
     // Get task status test
     let taskBody = null;

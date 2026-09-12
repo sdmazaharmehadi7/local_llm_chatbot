@@ -12,6 +12,7 @@ import crypto from "crypto";
 import { agentGraphService } from "./agentGraph.service.js";
 import { AGENT_STATUS } from "./agent.types.js";
 import Message from "../../models/Message.js";
+import Chat from "../../models/Chat.js";
 import { streamChatFromOllama } from "../ollama.service.js";
 
 /**
@@ -42,6 +43,7 @@ export async function runAgentTask({
   chatId = null,
   workspaceId = "default",
   options = {},
+  images = [],
 }) {
   const startTime = Date.now();
 
@@ -49,10 +51,27 @@ export async function runAgentTask({
     throw new Error("Task message is required.");
   }
 
-  // Load chat session conversation history from MongoDB
+  const taskImages = Array.isArray(images) && images.length > 0
+    ? images
+    : (Array.isArray(options?.images) ? options.images : (options?.image ? [options.image] : []));
+
+  const effectiveUserId = String(userId || "user-local-admin").trim();
+
+  // Load chat session conversation history from MongoDB (text only - zero image leakage)
   let conversationHistory = [];
   if (chatId) {
     try {
+      // SECURITY & MULTI-TENANT ISOLATION: Verify chat ownership if Chat model is available
+      if (Chat && Chat.db && Chat.db.readyState === 1) {
+        const chatDoc = await Chat.findOne({ _id: chatId }).lean();
+        if (chatDoc && chatDoc.userId && chatDoc.userId !== effectiveUserId) {
+          console.warn(
+            `[agent.service] Context isolation rejection: User ${effectiveUserId} attempted to access chat ${chatId} belonging to ${chatDoc.userId}`
+          );
+          throw new Error(`Unauthorized: Chat ${chatId} does not belong to user ${effectiveUserId}`);
+        }
+      }
+
       if (Message && Message.db && Message.db.readyState === 1) {
         const historyDocs = await Message.find({ chatId })
           .sort({ createdAt: -1 })
@@ -60,10 +79,13 @@ export async function runAgentTask({
           .lean();
         conversationHistory = historyDocs.reverse().map((m) => ({
           role: m.role,
-          content: m.content,
+          content: typeof m.content === "string" ? m.content : "",
         }));
       }
     } catch (err) {
+      if (err.message.includes("Unauthorized")) {
+        throw err;
+      }
       console.warn(`[agent.service] Notice: Could not load chat history for ${chatId}:`, err.message);
     }
   }
@@ -92,30 +114,43 @@ export async function runAgentTask({
     retriever: options.retriever,
     coderClient: options.coderClient,
     sandboxRunner: options.sandboxRunner,
+    visionClient: options.visionClient,
     signal: options.signal,
   });
 
+  // Formulate LangGraph checkpointer thread ID partitioned by userId and chatId
+  const threadId =
+    options?.threadId ||
+    (chatId ? `${effectiveUserId}:${chatId}` : `${effectiveUserId}:adhoc:${taskId}`);
+
   let finalGraphState;
   try {
-    finalGraphState = await app.invoke({
-      taskId,
-      userId,
-      chatId,
-      workspaceId,
-      userRequest: message.trim(),
-      conversationHistory,
-      steps: [],
-      toolExecutionCount: 0,
-      status: AGENT_STATUS.PLANNING,
-      currentAction: null,
-      finalResponse: "",
-      error: null,
-    });
+    finalGraphState = await app.invoke(
+      {
+        taskId,
+        userId: effectiveUserId,
+        chatId,
+        workspaceId,
+        userRequest: message.trim(),
+        conversationHistory,
+        images: taskImages,
+        steps: [],
+        toolExecutionCount: 0,
+        status: AGENT_STATUS.PLANNING,
+        currentAction: null,
+        finalResponse: "",
+        error: null,
+      },
+      { configurable: { thread_id: threadId } }
+    );
   } catch (graphErr) {
     console.error(`[agent.service] Error during LangGraph execution:`, graphErr);
     return {
       success: false,
       taskId,
+      threadId,
+      userId: effectiveUserId,
+      chatId,
       status: "failed",
       response: "",
       steps: [],
@@ -284,6 +319,10 @@ User Question: "${message}"`;
   console.log(`[agent] LangGraph task finished: ${taskId} (${isSuccess ? "COMPLETED" : "FAILED"})`);
 
   const structuredState = {
+    taskId,
+    threadId,
+    userId: effectiveUserId,
+    chatId: chatId || null,
     user_query: message.trim(),
     messages: conversationHistory,
     tool_results: (finalGraphState.steps || []).map((s) => s.observation),
@@ -301,6 +340,9 @@ User Question: "${message}"`;
   return {
     success: isSuccess,
     taskId,
+    threadId,
+    userId: effectiveUserId,
+    chatId: chatId || null,
     status: isSuccess ? "completed" : "failed",
     response: finalAnswer,
     steps: finalGraphState.steps || [],

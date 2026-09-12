@@ -248,6 +248,7 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
             body: JSON.stringify({
               message: agentTask,
               chatId,
+              fileIds,
               stream: true,
             }),
           });

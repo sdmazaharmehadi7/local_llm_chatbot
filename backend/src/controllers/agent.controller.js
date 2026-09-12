@@ -4,8 +4,12 @@
  * Exposes REST and SSE endpoints for the LangGraph-powered Sovereign Agent.
  */
 
+import fs from "fs";
 import { runAgentTask } from "../services/agent/agent.service.js";
 import { getAgentToolsMetadata } from "../services/agent/agentTools.js";
+import { agentGraphService } from "../services/agent/agentGraph.service.js";
+import File from "../models/File.js";
+import Chat from "../models/Chat.js";
 
 /**
  * POST /api/agent/tasks
@@ -13,7 +17,7 @@ import { getAgentToolsMetadata } from "../services/agent/agentTools.js";
  */
 export async function createAgentTask(req, res) {
   try {
-    const { message, chatId, workspaceId, options, stream } = req.body || {};
+    const { message, chatId, workspaceId, options, stream, images, image, fileIds } = req.body || {};
 
     if (!message || typeof message !== "string" || !message.trim()) {
       return res.status(400).json({
@@ -22,7 +26,42 @@ export async function createAgentTask(req, res) {
       });
     }
 
+    // Authenticated identity from authMiddleware (cannot be overridden by request body)
     const userId = req.userId || "user-local-admin";
+
+    // Multi-tenant check: Prevent cross-user chat access
+    if (chatId && Chat && Chat.db && Chat.db.readyState === 1) {
+      const chatDoc = await Chat.findOne({ _id: chatId }).lean();
+      if (chatDoc && chatDoc.userId && chatDoc.userId !== userId) {
+        return res.status(403).json({
+          success: false,
+          error: "Forbidden: Cannot access conversation belonging to another user.",
+        });
+      }
+    }
+
+    const taskImages = Array.isArray(images) && images.length > 0
+      ? [...images]
+      : (image ? [image] : (Array.isArray(options?.images) ? [...options.images] : []));
+
+    // If fileIds are provided and no explicit base64 images passed, load images from database
+    if (taskImages.length === 0 && Array.isArray(fileIds) && fileIds.length > 0) {
+      try {
+        if (File && File.db && File.db.readyState === 1) {
+          const files = await File.find({ _id: { $in: fileIds } }).lean();
+          for (const f of files) {
+            const isImage = f.category === "image" || (f.mimeType && f.mimeType.startsWith("image/"));
+            if (isImage && f.path && fs.existsSync(f.path)) {
+              const b64 = fs.readFileSync(f.path).toString("base64");
+              taskImages.push(`data:${f.mimeType || "image/png"};base64,${b64}`);
+            }
+          }
+        }
+      } catch (fErr) {
+        console.warn("[agent.controller] Could not load attached image files from fileIds:", fErr.message);
+      }
+    }
+
     const wantsStream =
       stream === true ||
       req.query?.stream === "true" ||
@@ -72,6 +111,7 @@ export async function createAgentTask(req, res) {
           userId,
           chatId: chatId || null,
           workspaceId: workspaceId || "default",
+          images: taskImages,
           options: {
             ...(options || {}),
             signal: abortController.signal,
@@ -170,6 +210,7 @@ export async function createAgentTask(req, res) {
       userId,
       chatId: chatId || null,
       workspaceId: workspaceId || "default",
+      images: taskImages,
       options: options || {},
     });
 
@@ -197,10 +238,31 @@ export async function getAgentTask(req, res) {
       return res.status(400).json({ success: false, error: "Task ID is required." });
     }
 
+    const userId = req.userId || "user-local-admin";
+    const threadId = req.query?.chatId
+      ? `${userId}:${req.query.chatId}`
+      : `${userId}:adhoc:${taskId}`;
+
+    let checkpointState = null;
+    try {
+      const stateObj = await agentGraphService.getCheckpointState(threadId);
+      if (stateObj && stateObj.values) {
+        checkpointState = {
+          status: stateObj.values.status,
+          toolExecutionCount: stateObj.values.toolExecutionCount,
+          stepCount: (stateObj.values.steps || []).length,
+        };
+      }
+    } catch {
+      // checkpoint not found or empty
+    }
+
     return res.json({
       success: true,
       framework: "langgraph",
       taskId,
+      threadId,
+      checkpoint: checkpointState,
       message: "Agent state is managed through the LangGraph execution cycle.",
     });
   } catch (err) {

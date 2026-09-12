@@ -158,6 +158,10 @@ export function useCreateMessageMutation() {
 
     onSuccess: (savedMessage, { chatId }, context) => {
       const canonical = toCanonicalMessage(savedMessage);
+      // Preserve optimistic fileIds if saved message didn't echo them
+      if ((!canonical.fileIds || canonical.fileIds.length === 0) && context?.optimisticMessage?.fileIds?.length) {
+        canonical.fileIds = context.optimisticMessage.fileIds;
+      }
       // Replace optimistic message with saved one from server (by id)
       queryClient.setQueryData(chatKeys.messages(userId, chatId), (old) => {
         if (!old) {

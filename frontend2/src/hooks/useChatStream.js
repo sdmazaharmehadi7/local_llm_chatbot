@@ -50,9 +50,12 @@ export function useChatStream({
   const messageTimestampsRef = useRef(new Map());
   const pendingFileIdsRef = useRef(new Map());
 
-  const formattedMessages = (persistedMessages ?? []).map((msg) =>
-    ensureTimestamp(msg, messageTimestampsRef)
-  );
+  const formattedMessages = (persistedMessages ?? []).map((msg) => ({
+    ...ensureTimestamp(msg, messageTimestampsRef),
+    fileIds: Array.isArray(msg.fileIds) && msg.fileIds.length > 0
+      ? msg.fileIds
+      : (pendingFileIdsRef.current.get(msg.id) || []),
+  }));
 
   const transport = useMemo(
     () =>
@@ -135,6 +138,9 @@ export function useChatStream({
   const activeStreamingMessages = isStreaming
     ? streamingMessages.map((msg) => ({
         ...ensureTimestamp(msg, messageTimestampsRef),
+        fileIds: Array.isArray(msg.fileIds) && msg.fileIds.length > 0
+          ? msg.fileIds
+          : (pendingFileIdsRef.current.get(msg.id) || []),
         model: msg.role === "assistant" ? modelRef.current : msg.model,
       }))
     : [];

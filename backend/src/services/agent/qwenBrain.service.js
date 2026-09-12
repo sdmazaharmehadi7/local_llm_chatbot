@@ -56,17 +56,30 @@ Iterative Multi-Step Reasoning Policy:
    - Call "calculator" whenever mathematical computation or arithmetic is required (e.g. percentage of allowable limit, pressure differential, flow reductions).
    - Once all required numerical values are retrieved (e.g. vibration = 3.1 and limit = 4.5), DO NOT continue retrieving! You MUST transition to "calculator" with the numerical expression (e.g. "(3.1 / 4.5) * 100").
    - Never perform mental arithmetic when calculator is available.
-5. MULTI-STEP WORKFLOW ORDER:
+5. PROMPT ISOLATION & TOOL-SPECIFIC INSTRUCTIONS:
+   - You are the SOLE Agent Brain and orchestrator. Specialist tools (vision, calculator, coding) are bounded workers, NOT autonomous agents. They must NEVER receive entire multi-tool user tasks or downstream instructions.
+   - When calling "vision": Generate a fresh, task-specific visual instruction tailored to the exact visual perception needed (e.g. image description, OCR, table reading, or extracting raw parameters/formulas/displayed answers). NEVER pass downstream tasks (such as "use calculator", "verify each calculation", or "calculate percentage error") to the vision tool!
+   - When calling "calculator": Formulate mathematical expressions derived from retrieved documents or visual extractions (e.g. "22 * 9550 / 960"). The calculator operates strictly on numerical expressions and never receives images.
+   - When calling "coding": Provide programming tasks only. NEVER pass image context or visual data to Qwen2.5-Coder.
+6. VISUAL EXTRACTION & CALCULATION VERIFICATION:
+   - When a user asks to inspect an image and verify, check, or perform calculations shown in it (e.g. "Extract the values from all 3 examples and verify each calculation using the calculator"):
+     * Step 1: Call "vision" with a task-specific instruction to extract visible parameters, formulas, and displayed answers/results exactly as shown. Vision extracts raw data ONLY and MUST NOT calculate or verify arithmetic.
+     * Step 2: Once Vision returns the raw extracted values (e.g. P = 22 kW, N = 960 RPM, displayed answer = 218.9 Nm), you (Qwen3) independently determine the required arithmetic expression (e.g. "22 * 9550 / 960") and call "calculator".
+     * Step 3: Calculator computes the exact numerical result (e.g. 218.85416666666666).
+     * Step 4: Compare the calculated value against the image's displayed answer, reason over rounding and tolerances, and synthesize the final answer.
+7. MULTI-STEP WORKFLOW ORDER:
    - When a request requires both document lookup and calculation: FIRST retrieve the data using "retrieve_information", inspect the returned values/tags, and THEN call "calculator" on the numbers.
+   - When a request requires both visual inspection and calculation: FIRST extract values using "vision", inspect the returned data, and THEN call "calculator" on the numbers.
    - Once all numbers are calculated, return "final" synthesizing the complete answer.
-6. THRESHOLD COMPARISON & PASS/FAIL CRITERIA:
+8. THRESHOLD COMPARISON & PASS/FAIL CRITERIA:
    - When the user asks a verification question (e.g., "Does it pass?"): after calculating the result, compare it against the threshold/allowable limit in the final answer (e.g. 68.9% <= 100% -> PASS).
-7. MINIMAL & PURPOSEFUL TOOL USAGE:
+9. MINIMAL & PURPOSEFUL TOOL USAGE:
    - If a question is general conversation or conceptual (e.g. "Explain what an API is"), answer directly without tools.
    - Do not call calculator or text_transform on questions that do not need them.
+   - Use "vision" ONLY when the user's request involves visual analysis of an image, photo, diagram, schematic, chart, or visual document, or when an image is attached. Never call "vision" for text-only questions or when no image is involved.
    - Use "coding" ONLY for writing, refactoring, or generating code using Qwen2.5-Coder.
    - Use "execute_code" ONLY when the user explicitly asks to run, execute, or test code in the secure container sandbox. Never execute code on the host machine.
-8. EVIDENCE & CITATIONS:
+10. EVIDENCE & CITATIONS:
    - When returning "final", cite document names, page numbers, instrument/tag identifiers (e.g. PI-102B, bearing tag), and explicit calculation steps.
 
 Strict Constraints:
@@ -189,6 +202,20 @@ ${boundedCode}`;
         return `Step ${idx + 1}:
   Action: Called tool "execute_code" in isolated sandbox (${obs.language || "python"})
   Observation${statusText}${timeoutNotice}: Exit Code: ${exitCode}${stdoutStr}${stderrStr}`;
+      }
+
+      // Format vision tool observations
+      if (toolName === "vision" && typeof obs === "object" && obs !== null) {
+        const analysis = obs.analysis || obs.description || "";
+        const boundedAnalysis =
+          analysis.length > 3500 ? `${analysis.slice(0, 3500)}... [truncated]` : analysis;
+        const measurements = Array.isArray(obs.extractedMeasurements) && obs.extractedMeasurements.length > 0
+          ? `\n  Detected Measurements: ${obs.extractedMeasurements.join(", ")}`
+          : "";
+        return `Step ${idx + 1}:
+  Action: Called tool "vision" (Qwen2.5-VL) for visual inspection: ${JSON.stringify(s.input?.prompt || s.input || {})}
+  Observation${statusText}: Visual Analysis:
+${boundedAnalysis}${measurements}`;
       }
 
       const obsStr = typeof obs === "object" ? JSON.stringify(obs) : String(obs || "No output");
@@ -460,7 +487,13 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
   const userRequest = (taskState.userRequest || "").trim();
   const steps = taskState.steps || [];
 
+  const hasExplicitCodeGenerationIntent =
+    /\b(write|create|implement|generate|code|function|script|class|method|snippet|algorithm|debug|refactor|fix code|compile|syntax)\b/i.test(
+      userRequest
+    );
+
   const isDocumentQuestion =
+    !hasExplicitCodeGenerationIntent &&
     /\b(document|documents|file|files|pdf|sop|manual|manuals|policy|policies|procedure|procedures|regulation|regulations|safety requirement|safety requirements|prv|cdu|crude distillation|valve|inspection interval|acceptance criteria|report|reports|inspection|equipment|pump|discharge|suction|pressure|flow rate|temperature|transmitter)\b/i.test(
       userRequest
     );
@@ -601,6 +634,36 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
       return {
         valid: false,
         reason: `For document queries, retrieve_information must be used instead of execute_code.`,
+      };
+    }
+  }
+
+  // 7. VISION POLICY GUARD:
+  if (toolName === "vision") {
+    const isConceptualOrExplanation =
+      /^(explain|what is|what are|what does|how does|why is|difference between|overview of|define)\b/i.test(
+        userRequest
+      );
+    const hasImages =
+      (Array.isArray(taskState.images) && taskState.images.length > 0) ||
+      Boolean(taskState.image) ||
+      Boolean(decision.input?.image);
+    const mentionsVisuals =
+      /\b(image|picture|photo|diagram|schematic|chart|graph|blueprint|drawing|visual|figure|ocr|snapshot|gauge|reading|inspect)\b/i.test(
+        userRequest
+      );
+
+    if (isConceptualOrExplanation && !hasImages && !mentionsVisuals) {
+      return {
+        valid: false,
+        reason: `The vision tool cannot be called for conceptual, definition, or explanation questions (e.g. 'Explain what an API is'). Answer directly using general knowledge.`,
+      };
+    }
+
+    if (!hasImages && !mentionsVisuals) {
+      return {
+        valid: false,
+        reason: `The vision tool cannot be called when no image is provided and the request does not involve visual inspection.`,
       };
     }
   }

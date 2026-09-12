@@ -12,7 +12,7 @@
  * - Emits real-time progress events for UI compatibility.
  */
 
-import { StateGraph, Annotation, START, END } from "@langchain/langgraph";
+import { StateGraph, Annotation, START, END, MemorySaver } from "@langchain/langgraph";
 import {
   AGENT_STATUS,
   AGENT_ACTION_TYPES,
@@ -69,6 +69,10 @@ export function normalizeActionFingerprint(toolName, input = {}) {
     const lang = String(input?.language || "python").trim().toLowerCase();
     return `${normTool}:::lang=${lang}:::code=${code.slice(0, 100)}`;
   }
+  if (normTool === "vision") {
+    const prompt = String(input?.prompt || "").trim().toLowerCase();
+    return `${normTool}:::prompt=${prompt.slice(0, 100)}`;
+  }
   return `${normTool}:::${JSON.stringify(input || {})}`;
 }
 
@@ -81,24 +85,53 @@ export const AgentStateAnnotation = Annotation.Root({
   chatId: Annotation({ reducer: (_, y) => y, default: () => null }),
   workspaceId: Annotation({ reducer: (_, y) => y, default: () => "default" }),
   userRequest: Annotation({ reducer: (_, y) => y, default: () => "" }),
-  conversationHistory: Annotation({ reducer: (_, y) => y, default: () => [] }),
-  steps: Annotation({ reducer: (x, y) => x.concat(y), default: () => [] }),
-  toolExecutionCount: Annotation({ reducer: (_, y) => y, default: () => 0 }),
+  conversationHistory: Annotation({ reducer: (_, y) => (Array.isArray(y) ? y : []), default: () => [] }),
+  images: Annotation({ reducer: (_, y) => (Array.isArray(y) ? y : []), default: () => [] }),
+  steps: Annotation({
+    reducer: (x, y) => {
+      // Clean reset on empty array passed at start of new task turn
+      if (Array.isArray(y) && y.length === 0) return [];
+      return (x || []).concat(y || []);
+    },
+    default: () => [],
+  }),
+  toolExecutionCount: Annotation({ reducer: (_, y) => y ?? 0, default: () => 0 }),
   status: Annotation({ reducer: (_, y) => y, default: () => AGENT_STATUS.PLANNING }),
   currentAction: Annotation({ reducer: (_, y) => y, default: () => null }),
   finalResponse: Annotation({ reducer: (_, y) => y, default: () => "" }),
   error: Annotation({ reducer: (_, y) => y, default: () => null }),
   retrievedFacts: Annotation({
-    reducer: (x, y) => (Array.isArray(y) ? x.concat(y) : (y ? [...x, y] : x)),
+    reducer: (x, y) => {
+      // Clean reset on empty array passed at start of new task turn
+      if (Array.isArray(y) && y.length === 0) return [];
+      return Array.isArray(y) ? (x || []).concat(y) : (y ? [...(x || []), y] : (x || []));
+    },
     default: () => [],
   }),
-  remainingInformation: Annotation({ reducer: (_, y) => y, default: () => [] }),
+  remainingInformation: Annotation({ reducer: (_, y) => (Array.isArray(y) ? y : []), default: () => [] }),
 });
 
 class AgentGraphService {
   constructor() {
     this.brainLlmClient = null; // Testing hook for offline mock inference
     this.coderLlmClient = null; // Testing hook for offline coding mock inference
+    this.visionLlmClient = null; // Testing hook for offline vision mock inference
+    this.checkpointer = new MemorySaver(); // LangGraph state checkpointer for thread-isolated state
+  }
+
+  getCheckpointer() {
+    return this.checkpointer;
+  }
+
+  resetCheckpointer() {
+    this.checkpointer = new MemorySaver();
+  }
+
+  async getCheckpointState(threadId) {
+    if (!threadId) return null;
+    const config = { configurable: { thread_id: String(threadId) } };
+    const app = this.buildGraph();
+    return app.getState(config);
   }
 
   setAgentBrainLlmClient(clientFn) {
@@ -115,6 +148,14 @@ class AgentGraphService {
 
   resetCoderLlmClient() {
     this.coderLlmClient = null;
+  }
+
+  setVisionLlmClient(clientFn) {
+    this.visionLlmClient = clientFn;
+  }
+
+  resetVisionLlmClient() {
+    this.visionLlmClient = null;
   }
 
   /**
@@ -147,8 +188,10 @@ class AgentGraphService {
    * @returns {object} Compiled LangGraph Runnable
    */
   buildGraph(runnerOptions = {}) {
-    const { onProgress, retriever, coderClient, sandboxRunner, signal } = runnerOptions;
+    const { onProgress, retriever, coderClient, sandboxRunner, visionClient, signal, checkpointer } = runnerOptions;
     const effectiveCoderClient = coderClient || this.coderLlmClient;
+    const effectiveVisionClient = visionClient || this.visionLlmClient;
+    const effectiveCheckpointer = checkpointer !== undefined ? checkpointer : this.checkpointer;
 
     const emit = (event) => {
       if (typeof onProgress === "function") {
@@ -314,6 +357,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
       let policyValidation = validateToolSelectionPolicy(decision, {
         userRequest: state.userRequest,
         steps: state.steps,
+        images: state.images || [],
       });
 
       // Single-turn self-correction retry on policy rejection (e.g. duplicate query proposed)
@@ -333,6 +377,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
             const retryValidation = validateToolSelectionPolicy(retryParsed.decision, {
               userRequest: state.userRequest,
               steps: state.steps,
+              images: state.images || [],
             });
             if (retryValidation.valid) {
               decision = retryParsed.decision;
@@ -365,8 +410,8 @@ Return ONLY a valid JSON object matching the Response Schema.`;
       }
 
       if (decision.action === AGENT_ACTION_TYPES.FINAL) {
-        const finalStepNum = state.steps.length + 1;
-        console.log(`\n[Agent Step ${finalStepNum}]`);
+        const finalStepNum = (state.steps.length * 2) + 1;
+        console.log(`\n[Agent Step ${finalStepNum}] Model: Qwen3 / Decision: final answer`);
         console.log(`User task preserved: yes`);
         console.log(`Final answer`);
         console.log(decision.answer || decision.response || "Task completed.");
@@ -381,6 +426,9 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           currentAction: decision,
         };
       }
+
+      const reasonerStepNum = (state.steps.length * 2) + 1;
+      console.log(`\n[Agent Step ${reasonerStepNum}] Model: Qwen3 / Decision: ${decision.tool || decision.toolName}${decision.reason ? ` / Reason: ${decision.reason}` : ""}`);
 
       return {
         status: AGENT_STATUS.EXECUTING,
@@ -438,8 +486,25 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         };
       }
 
-      const stepNumber = state.steps.length + 1;
-      console.log(`\n[Agent Step ${stepNumber}]`);
+      const toolStepNum = (state.steps.length * 2) + 2;
+      let toolDetail = "";
+      if (toolName === "vision") {
+        toolDetail = `/ Instruction: ${decision.input?.prompt || "Visual inspection"}`;
+      } else if (toolName === "calculator") {
+        toolDetail = `/ Expression: ${decision.input?.expression || ""}`;
+      } else if (toolName === "retrieve_information") {
+        toolDetail = `/ Query: ${decision.input?.query || ""}`;
+      } else if (toolName === "coding") {
+        toolDetail = `/ Task: ${decision.input?.task || ""}`;
+      } else if (toolName === "execute_code") {
+        toolDetail = `/ Language: ${decision.input?.language || "python"}`;
+      } else if (toolName === "text_transform") {
+        toolDetail = `/ Operation: ${decision.input?.operation || ""}`;
+      } else {
+        toolDetail = `/ Input: ${JSON.stringify(decision.input || {})}`;
+      }
+
+      console.log(`\n[Agent Step ${toolStepNum}] Tool: ${toolName} ${toolDetail}`);
       console.log(`User task preserved: yes`);
       console.log(`Tool: ${toolName}`);
       if (decision.input) {
@@ -451,6 +516,8 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           console.log(`Task: ${decision.input.task}`);
         } else if (toolName === "execute_code") {
           console.log(`Language: ${decision.input.language || "python"}`);
+        } else if (toolName === "vision") {
+          console.log(`Instruction: ${decision.input.prompt || "Visual inspection"}`);
         } else {
           console.log(`Input: ${JSON.stringify(decision.input)}`);
         }
@@ -467,6 +534,8 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           ? "🔧 Invoking Qwen2.5-Coder..."
           : toolName === "execute_code"
           ? "🔒 Executing in isolated container sandbox..."
+          : toolName === "vision"
+          ? "👁️ Inspecting visual content with Qwen2.5-VL..."
           : `🔧 Using ${toolName}...`;
 
       emit({
@@ -483,6 +552,8 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         retriever,
         coderClient: effectiveCoderClient,
         sandboxRunner,
+        visionClient: effectiveVisionClient,
+        images: state.images || [],
       });
 
       const matchedTool = tools.find((t) => t.name === toolName);
@@ -580,6 +651,12 @@ Return ONLY a valid JSON object matching the Response Schema.`;
             reason: `Evaluating output from ${toolName}...`,
           });
 
+          // Bounded observation storage to prevent unbounded state memory usage
+          let boundedOutput = parsedResult;
+          if (typeof parsedResult === "string" && parsedResult.length > 8000) {
+            boundedOutput = `${parsedResult.slice(0, 8000)}... [truncated]`;
+          }
+
           stepRecord = {
             type: "tool",
             action: "tool",
@@ -587,8 +664,8 @@ Return ONLY a valid JSON object matching the Response Schema.`;
             toolName,
             reason: decision.reason,
             input: decision.input,
-            output: parsedResult,
-            observation: parsedResult,
+            output: boundedOutput,
+            observation: boundedOutput,
             status: isSuccess ? "completed" : "failed",
             executionTimeMs: Date.now() - startTime,
           };
@@ -647,12 +724,16 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         console.log(`Retrieved facts/evidence count: ${currentRetrievalCount}`);
       }
 
-      return {
+      const nextState = {
         steps: [stepRecord],
-        retrievedFacts: newFacts,
         toolExecutionCount: state.toolExecutionCount + 1,
         status: AGENT_STATUS.PLANNING,
       };
+      if (newFacts.length > 0) {
+        nextState.retrievedFacts = newFacts;
+      }
+
+      return nextState;
     };
 
     /**
@@ -686,7 +767,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
       })
       .addEdge("tools", "reasoner");
 
-    return workflow.compile();
+    return workflow.compile(effectiveCheckpointer ? { checkpointer: effectiveCheckpointer } : {});
   }
 }
 

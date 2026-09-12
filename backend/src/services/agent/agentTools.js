@@ -22,6 +22,7 @@ import textTransformTool from "./tools/textTransform.tool.js";
 import retrievalTool from "./tools/retrieval.tool.js";
 import codingTool from "./tools/coding.tool.js";
 import executeCodeTool from "./tools/executeCode.tool.js";
+import visionTool from "./tools/vision.tool.js";
 
 /**
  * Zod schema for calculator tool
@@ -124,6 +125,20 @@ export const ExecuteCodeSchema = z.object({
 });
 
 /**
+ * Zod schema for vision tool (Qwen2.5-VL)
+ */
+export const VisionSchema = z.object({
+  prompt: z
+    .string()
+    .min(1, "Inspection prompt must not be empty")
+    .describe("The visual inspection question, detail to extract, or OCR analysis to perform on the image."),
+  image: z
+    .string()
+    .optional()
+    .describe("Optional base64 encoded image string or data URL if providing directly in the tool call."),
+});
+
+/**
  * Factory creating LangChain StructuredTool instances bound to caller context.
  *
  * @param {object} [context={}]
@@ -133,6 +148,8 @@ export const ExecuteCodeSchema = z.object({
  * @param {Function} [context.retriever]
  * @param {Function} [context.coderClient]
  * @param {Function} [context.sandboxRunner]
+ * @param {Function} [context.visionClient]
+ * @param {Array<string>} [context.images]
  * @returns {Array<DynamicStructuredTool>}
  */
 export function createAgentTools(context = {}) {
@@ -191,7 +208,18 @@ export function createAgentTools(context = {}) {
     },
   });
 
-  return [calcTool, textTool, retrieveTool, codeTool, execTool];
+  const visTool = new DynamicStructuredTool({
+    name: "vision",
+    description:
+      "Performs visual analysis, OCR, diagram inspection, chart reading, or equipment photo inspection using the specialized Qwen2.5-VL model. Extracts visible text, numbers, formulas, measurements, and labels without performing calculations or invoking other tools. Use ONLY when visual inspection of an image, schematic, photo, or diagram is required.",
+    schema: VisionSchema,
+    func: async (input) => {
+      const res = await visionTool.execute(input, context);
+      return JSON.stringify(res);
+    },
+  });
+
+  return [calcTool, textTool, retrieveTool, codeTool, execTool, visTool];
 }
 
 /**
@@ -236,6 +264,7 @@ export default {
   RetrievalSchema,
   CodingSchema,
   ExecuteCodeSchema,
+  VisionSchema,
   createAgentTools,
   getAgentToolsMetadata,
 };
