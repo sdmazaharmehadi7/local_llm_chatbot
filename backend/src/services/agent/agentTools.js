@@ -21,6 +21,7 @@ import calculatorTool from "./tools/calculator.tool.js";
 import textTransformTool from "./tools/textTransform.tool.js";
 import retrievalTool from "./tools/retrieval.tool.js";
 import codingTool from "./tools/coding.tool.js";
+import executeCodeTool from "./tools/executeCode.tool.js";
 
 /**
  * Zod schema for calculator tool
@@ -100,6 +101,29 @@ export const CodingSchema = z.object({
 });
 
 /**
+ * Zod schema for sandbox execute_code tool
+ */
+export const ExecuteCodeSchema = z.object({
+  code: z
+    .string()
+    .min(1, "Code must not be empty")
+    .describe("The source code to execute inside the isolated container sandbox."),
+  language: z
+    .string()
+    .optional()
+    .default("python")
+    .describe("Programming language runtime: 'python', 'javascript', or 'sh' (default: 'python')."),
+  timeoutMs: z
+    .number()
+    .int()
+    .min(1000)
+    .max(30000)
+    .optional()
+    .default(10000)
+    .describe("Execution timeout in milliseconds (1000 to 30000, default: 10000)."),
+});
+
+/**
  * Factory creating LangChain StructuredTool instances bound to caller context.
  *
  * @param {object} [context={}]
@@ -108,6 +132,7 @@ export const CodingSchema = z.object({
  * @param {string} [context.workspaceId]
  * @param {Function} [context.retriever]
  * @param {Function} [context.coderClient]
+ * @param {Function} [context.sandboxRunner]
  * @returns {Array<DynamicStructuredTool>}
  */
 export function createAgentTools(context = {}) {
@@ -155,7 +180,18 @@ export function createAgentTools(context = {}) {
     },
   });
 
-  return [calcTool, textTool, retrieveTool, codeTool];
+  const execTool = new DynamicStructuredTool({
+    name: "execute_code",
+    description:
+      "Executes code within a secure, container-isolated sandbox with no network access, read-only root filesystem, strict memory/CPU limits, and timeout protection. Use ONLY when the user explicitly requests executing, running, or testing code. Never executes on host.",
+    schema: ExecuteCodeSchema,
+    func: async (input) => {
+      const res = await executeCodeTool.execute(input, context);
+      return JSON.stringify(res);
+    },
+  });
+
+  return [calcTool, textTool, retrieveTool, codeTool, execTool];
 }
 
 /**
@@ -199,6 +235,7 @@ export default {
   TextTransformSchema,
   RetrievalSchema,
   CodingSchema,
+  ExecuteCodeSchema,
   createAgentTools,
   getAgentToolsMetadata,
 };

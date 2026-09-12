@@ -64,6 +64,8 @@ Iterative Multi-Step Reasoning Policy:
 7. MINIMAL & PURPOSEFUL TOOL USAGE:
    - If a question is general conversation or conceptual (e.g. "Explain what an API is"), answer directly without tools.
    - Do not call calculator or text_transform on questions that do not need them.
+   - Use "coding" ONLY for writing, refactoring, or generating code using Qwen2.5-Coder.
+   - Use "execute_code" ONLY when the user explicitly asks to run, execute, or test code in the secure container sandbox. Never execute code on the host machine.
 8. EVIDENCE & CITATIONS:
    - When returning "final", cite document names, page numbers, instrument/tag identifiers (e.g. PI-102B, bearing tag), and explicit calculation steps.
 
@@ -176,6 +178,17 @@ ${boundedExcerpts}`;
   Action: Called tool "coding" (Qwen2.5-Coder) for task: ${JSON.stringify(s.input?.task || s.input || {})}
   Observation${statusText}: Generated ${lang} solution:
 ${boundedCode}`;
+      }
+
+      // Format sandbox execute_code tool observations
+      if (toolName === "execute_code" && typeof obs === "object" && obs !== null) {
+        const exitCode = obs.exitCode !== undefined ? obs.exitCode : (obs.success ? 0 : 1);
+        const stdoutStr = obs.stdout ? `\n  Stdout:\n${obs.stdout.trim()}` : "";
+        const stderrStr = obs.stderr ? `\n  Stderr:\n${obs.stderr.trim()}` : "";
+        const timeoutNotice = obs.timedOut ? " [TIMED OUT]" : "";
+        return `Step ${idx + 1}:
+  Action: Called tool "execute_code" in isolated sandbox (${obs.language || "python"})
+  Observation${statusText}${timeoutNotice}: Exit Code: ${exitCode}${stdoutStr}${stderrStr}`;
       }
 
       const obsStr = typeof obs === "object" ? JSON.stringify(obs) : String(obs || "No output");
@@ -562,6 +575,32 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
       return {
         valid: false,
         reason: `For document queries, retrieve_information must be used instead of the coding tool.`,
+      };
+    }
+  }
+
+  // 6. SANDBOX EXECUTE CODE POLICY GUARD:
+  if (toolName === "execute_code") {
+    const isConceptualOrExplanation =
+      /^(explain|what is|what are|what does|how does|why is|difference between|overview of|define)\b/i.test(
+        userRequest
+      );
+    const hasExplicitExecutionIntent =
+      /\b(run|execute|test|eval|evaluate|output|print|exec|sandbox|terminal|shell)\b/i.test(
+        userRequest
+      );
+
+    if (isConceptualOrExplanation && !hasExplicitExecutionIntent) {
+      return {
+        valid: false,
+        reason: `The execute_code tool cannot be called for conceptual, definition, or explanation questions (e.g. 'Explain what an API is'). Answer directly using general knowledge.`,
+      };
+    }
+
+    if (isDocumentQuestion && steps.length === 0) {
+      return {
+        valid: false,
+        reason: `For document queries, retrieve_information must be used instead of execute_code.`,
       };
     }
   }

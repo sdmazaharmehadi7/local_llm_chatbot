@@ -22,6 +22,7 @@ import {
   TextTransformSchema,
   RetrievalSchema,
   CodingSchema,
+  ExecuteCodeSchema,
   createAgentTools,
   getAgentToolsMetadata,
 } from "../src/services/agent/agentTools.js";
@@ -98,6 +99,17 @@ async function runTests() {
 
     const invalidCoding = CodingSchema.safeParse({ task: "" });
     assert.strictEqual(invalidCoding.success, false);
+
+    // Sandbox execute code validation
+    const validExec = ExecuteCodeSchema.safeParse({
+      code: "print(1)",
+      language: "python",
+    });
+    assert.strictEqual(validExec.success, true);
+    assert.strictEqual(validExec.data.language, "python");
+
+    const invalidExec = ExecuteCodeSchema.safeParse({ code: "" });
+    assert.strictEqual(invalidExec.success, false);
 
     pass("Zod schemas correctly validate tool arguments and reject invalid inputs");
   }
@@ -187,13 +199,14 @@ async function runTests() {
   console.log("\n--- [Section 3] Tool Catalog Metadata ---");
   {
     const metadata = getAgentToolsMetadata();
-    assert.strictEqual(metadata.length, 4);
+    assert.strictEqual(metadata.length, 5);
     const names = metadata.map((m) => m.name);
     assert.ok(names.includes("calculator"));
     assert.ok(names.includes("text_transform"));
     assert.ok(names.includes("retrieve_information"));
     assert.ok(names.includes("coding"));
-    pass("Tool metadata catalog lists all 4 registered tools with schema specifications");
+    assert.ok(names.includes("execute_code"));
+    pass("Tool metadata catalog lists all 5 registered tools with schema specifications");
   }
 
   // ─── 4. TOOL SELECTION POLICY TESTS (TESTS 1 to 6) ─────────────────────────
@@ -966,7 +979,7 @@ async function runTests() {
     await listAgentTools({}, mockToolsRes);
     assert.strictEqual(toolsBody.success, true);
     assert.strictEqual(toolsBody.framework, "langgraph");
-    assert.strictEqual(toolsBody.count, 4);
+    assert.strictEqual(toolsBody.count, 5);
 
     // Get task status test
     let taskBody = null;

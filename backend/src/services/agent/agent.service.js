@@ -91,6 +91,7 @@ export async function runAgentTask({
     onProgress: emitProgress,
     retriever: options.retriever,
     coderClient: options.coderClient,
+    sandboxRunner: options.sandboxRunner,
     signal: options.signal,
   });
 
