@@ -251,6 +251,7 @@ export function detectKnowledgeBaseDocument(message = "", documents = []) {
  */
 export function routeMessage({
   message = "",
+  mode = "normal",
   conversationHistory = [],
   hasChatDocuments = false,
   attachedFiles = [],
@@ -266,11 +267,41 @@ export function routeMessage({
       ? knowledgeBaseDocuments
       : (knowledgeBaseDocumentNames || []).map((name) => ({ id: null, filename: name }));
 
-  // 0. Knowledge Base Slash Command: /knowledgebase <question>
-  // Case-insensitive detection. When message starts with /knowledgebase, route directly to KB RAG.
-  const kbSlashMatch = cleanMessage.match(/^\/knowledgebase(?::|\s+|$)([\s\S]*)$/i);
-  if (kbSlashMatch) {
-    const remainingQuestion = (kbSlashMatch[1] || "").trim();
+  // Determine effective mode:
+  // 1. Explicit slash command prefix takes precedence
+  let effectiveMode = (mode || "").toLowerCase().trim();
+  if (/^\/(?:knowledgebase|kb)(?::|\s+|$)/i.test(cleanMessage)) {
+    effectiveMode = "knowledgebase";
+  } else if (/^\/(?:agent|framework-agent|agent-framework|langgraph)(?::|\s+|$)/i.test(cleanMessage)) {
+    effectiveMode = "agent";
+  } else if (!effectiveMode || effectiveMode === "chat" || effectiveMode === "default") {
+    effectiveMode = "normal";
+  }
+
+  // ── MODE 1: AGENT MODE ─────────────────────────────────────────────────────
+  if (effectiveMode === "agent") {
+    const agentTask = cleanMessage
+      .replace(/^\/(?:agent|framework-agent|agent-framework|langgraph)(?::|\s+|$)/i, "")
+      .trim();
+
+    return {
+      route: "AGENT",
+      useRag: false,
+      reason: "agent_mode",
+      retrievalMode: null,
+      targetDocumentId: null,
+      targetFilename: null,
+      cleanedQuery: agentTask,
+      isEmptyCommand: !agentTask,
+    };
+  }
+
+  // ── MODE 2: KNOWLEDGE BASE MODE ────────────────────────────────────────────
+  if (effectiveMode === "knowledgebase") {
+    const remainingQuestion = cleanMessage
+      .replace(/^\/(?:knowledgebase|kb)(?::|\s+|$)/i, "")
+      .trim();
+
     if (!remainingQuestion) {
       return {
         route: "KNOWLEDGE_BASE",
@@ -293,7 +324,7 @@ export function routeMessage({
     return {
       route: "KNOWLEDGE_BASE",
       useRag: true,
-      reason: "kb_slash_command",
+      reason: detectedKbDoc.documentId ? "kb_document_specific_mention" : "kb_mode_query",
       retrievalMode: detectedKbDoc.documentId ? "DOCUMENT_SPECIFIC" : "GLOBAL",
       targetDocumentId: detectedKbDoc.documentId || null,
       targetFilename: detectedKbDoc.filename || null,
@@ -302,7 +333,12 @@ export function routeMessage({
     };
   }
 
-  // 1. Check if incoming message has newly attached indexable documents
+  // ── MODE 3: NORMAL CHAT MODE (KNOWLEDGE BASE STRICTLY OFF) ─────────────────
+  // Rule: DO NOT access the Knowledge Base. DO NOT perform Knowledge Base retrieval.
+  // DO NOT search indexed documents. DO NOT inject Knowledge Base chunks.
+  // Use general LLM internal knowledge only.
+
+  // 1. Check if incoming message has newly attached indexable documents (temporary request context)
   const hasIncomingDoc = (attachedFiles || []).some(
     (f) =>
       f?.category === "pdf" ||
@@ -319,10 +355,11 @@ export function routeMessage({
       retrievalMode: null,
       targetDocumentId: null,
       targetFilename: null,
+      cleanedQuery: cleanMessage,
     };
   }
 
-  // If message is empty (e.g. attachment only handled above)
+  // If message is empty
   if (!cleanMessage) {
     return {
       route: "GENERAL",
@@ -331,157 +368,13 @@ export function routeMessage({
       retrievalMode: null,
       targetDocumentId: null,
       targetFilename: null,
+      cleanedQuery: "",
     };
   }
 
-  // 2. Explicit General Question Bypasses (Must bypass RAG even if documents exist)
-  if (MATH_EXPRESSION_REGEX.test(cleanMessage)) {
-    return {
-      route: "GENERAL",
-      useRag: false,
-      reason: "general_math",
-      retrievalMode: null,
-      targetDocumentId: null,
-      targetFilename: null,
-    };
-  }
-
-  if (GREETING_OR_IDENTITY_REGEX.test(cleanMessage)) {
-    return {
-      route: "GENERAL",
-      useRag: false,
-      reason: "general_greeting",
-      retrievalMode: null,
-      targetDocumentId: null,
-      targetFilename: null,
-    };
-  }
-
-  // Extract keywords from indexed KB document names (>= 3 chars, e.g. "prv", "valve", "sop")
-  const kbDocumentKeywords = new Set();
-  const STOP_WORDS = new Set(["the", "and", "for", "doc", "docs", "pdf", "file", "files", "new", "old"]);
-  for (const doc of availableKbDocs) {
-    const norm = normalizeDocName(doc.filename);
-    for (const word of norm.split(" ")) {
-      if (word.length >= 3 && !STOP_WORDS.has(word)) {
-        kbDocumentKeywords.add(word);
-      }
-    }
-  }
-
-  const normMsg = ` ${normalizeDocName(cleanMessage)} `;
-  const matchesDocKeyword = Array.from(kbDocumentKeywords).some((kw) => {
-    const kwPattern = new RegExp(`(^|\\s)${escapeRegex(kw)}(\\s|$)`, "i");
-    return kwPattern.test(normMsg);
-  });
-
-  const hasDocNoun = DOCUMENT_NOUNS_REGEX.test(cleanMessage);
-  const hasKbNoun =
-    KB_INTENT_REGEX.test(cleanMessage) ||
-    KB_SOURCE_PHRASES_REGEX.test(cleanMessage) ||
-    KB_PROCEDURAL_TERMS_REGEX.test(cleanMessage) ||
-    KB_PROCEDURAL_QUESTION_REGEX.test(cleanMessage) ||
-    matchesDocKeyword;
-
-  if (GENERAL_KNOWLEDGE_REGEX.test(cleanMessage) && !hasDocNoun && !hasKbNoun) {
-    return {
-      route: "GENERAL",
-      useRag: false,
-      reason: "general_knowledge",
-      retrievalMode: null,
-      targetDocumentId: null,
-      targetFilename: null,
-    };
-  }
-
-  if (GENERAL_WORLD_QUESTIONS_REGEX.test(cleanMessage) && !hasDocNoun && !hasKbNoun) {
-    return {
-      route: "GENERAL",
-      useRag: false,
-      reason: "general_trivia",
-      retrievalMode: null,
-      targetDocumentId: null,
-      targetFilename: null,
-    };
-  }
-
-  if (GENERAL_CODING_REGEX.test(cleanMessage) && !hasDocNoun && !hasKbNoun) {
-    return {
-      route: "GENERAL",
-      useRag: false,
-      reason: "general_coding",
-      retrievalMode: null,
-      targetDocumentId: null,
-      targetFilename: null,
-    };
-  }
-
-  if (GENERAL_CREATIVE_OR_CHAT_REGEX.test(cleanMessage) && !hasDocNoun && !hasKbNoun) {
-    return {
-      route: "GENERAL",
-      useRag: false,
-      reason: "general_creative",
-      retrievalMode: null,
-      targetDocumentId: null,
-      targetFilename: null,
-    };
-  }
-
-  // 3. Document-Specific Reference Detection for Knowledge Base
-  let detectedKbDoc = { documentId: null, filename: null, isAmbiguous: false };
-  if (hasKnowledgeBaseDocuments && availableKbDocs.length > 0) {
-    detectedKbDoc = detectKnowledgeBaseDocument(cleanMessage, availableKbDocs);
-  }
-
-  const explicitlyChatDoc = CHAT_SPECIFIC_DOC_REGEX.test(cleanMessage);
-
-  // 4. Knowledge Base Intent Matching (When KB documents exist)
-  if (hasKnowledgeBaseDocuments) {
-    const hasKbIntent =
-      detectedKbDoc.filename !== null ||
-      KB_INTENT_REGEX.test(cleanMessage) ||
-      KB_SOURCE_PHRASES_REGEX.test(cleanMessage) ||
-      KB_PROCEDURAL_TERMS_REGEX.test(cleanMessage) ||
-      KB_PROCEDURAL_QUESTION_REGEX.test(cleanMessage) ||
-      matchesDocKeyword;
-
-    if (hasKbIntent && (!explicitlyChatDoc || !hasChatDocuments)) {
-      let finalDocId = detectedKbDoc.documentId;
-      let finalDocFilename = detectedKbDoc.filename;
-      let reason = detectedKbDoc.documentId
-        ? "kb_document_specific_mention"
-        : "kb_procedural_or_intent_match";
-
-      // If no explicit document mentioned in this turn, check conversational continuity (Part 13)
-      if (!finalDocId && Array.isArray(conversationHistory) && conversationHistory.length > 0) {
-        const recentMessages = conversationHistory.slice(-4);
-        const lastAssistantMsg = [...recentMessages].reverse().find((m) => m.role === "assistant");
-        const prevSources = lastAssistantMsg?.metadata?.ragSources || [];
-        const uniquePrevDocIds = Array.from(
-          new Set(prevSources.map((s) => s.documentId).filter(Boolean))
-        );
-
-        if (uniquePrevDocIds.length === 1) {
-          finalDocId = uniquePrevDocIds[0];
-          finalDocFilename = prevSources[0]?.filename || null;
-          reason = "kb_conversational_followup";
-        }
-      }
-
-      const retrievalMode = finalDocId ? "DOCUMENT_SPECIFIC" : "GLOBAL";
-      return {
-        route: "KNOWLEDGE_BASE",
-        useRag: true,
-        reason,
-        retrievalMode,
-        targetDocumentId: finalDocId,
-        targetFilename: finalDocFilename,
-      };
-    }
-  }
-
-  // 5. Chat Document Signals (if chat has documents)
+  // 2. Chat Document Signals (only if chat already has uploaded documents)
   if (hasChatDocuments) {
+    const hasDocNoun = DOCUMENT_NOUNS_REGEX.test(cleanMessage);
     const hasDocStructure = DOCUMENT_STRUCTURE_REGEX.test(cleanMessage);
     const hasDocIntent = DOCUMENT_INTENT_REGEX.test(cleanMessage);
     const hasDocSourcePhrase = DOCUMENT_SOURCE_PHRASES_REGEX.test(cleanMessage);
@@ -495,15 +388,16 @@ export function routeMessage({
         retrievalMode: null,
         targetDocumentId: null,
         targetFilename: null,
+        cleanedQuery: cleanMessage,
       };
     }
 
-    // Conversational Document Continuity for Chat-scoped Docs
+    // Conversational Document Continuity for Chat-scoped Docs ONLY
     if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
       const recentMessages = conversationHistory.slice(-4);
       const lastAssistantMsg = [...recentMessages].reverse().find((m) => m.role === "assistant");
-      const lastAssistantHadDocSources = Boolean(
-        lastAssistantMsg?.metadata?.ragSources?.length > 0 ||
+      const lastAssistantHadChatDocSources = Boolean(
+        lastAssistantMsg?.metadata?.ragSources?.some((s) => s.scope === "chat" || !s.scope) ||
         lastAssistantMsg?.parts?.some((p) => (p.type === "source" && p.isDocument) || p.type === "source-document") ||
         (lastAssistantMsg?.content && /Sources:\s*.*—\s*Page/i.test(lastAssistantMsg.content))
       );
@@ -517,7 +411,7 @@ export function routeMessage({
         )
       );
 
-      if (lastAssistantHadDocSources || lastUserWasDocQuery) {
+      if (lastAssistantHadChatDocSources || lastUserWasDocQuery) {
         const hasDocPronounReference =
           /\b(does it|what does it|is it mentioned|in it|from it|in this|from this|in that|from that|according to it)\b/i.test(
             cleanMessage
@@ -535,90 +429,22 @@ export function routeMessage({
             retrievalMode: null,
             targetDocumentId: null,
             targetFilename: null,
+            cleanedQuery: cleanMessage,
           };
         }
       }
     }
   }
 
-  // 6. Conversational Follow-up Continuity for Knowledge Base (Multi-Turn)
-  if (hasKnowledgeBaseDocuments && Array.isArray(conversationHistory) && conversationHistory.length > 0) {
-    const recentMessages = conversationHistory.slice(-4);
-    const lastAssistantMsg = [...recentMessages].reverse().find((m) => m.role === "assistant");
-    const lastUserMsg = [...recentMessages].reverse().find((m) => m.role === "user");
-
-    // Check if the previous assistant turn had Knowledge Base sources
-    const prevSources = lastAssistantMsg?.metadata?.ragSources || [];
-    const prevDocId = prevSources[0]?.documentId || null;
-    const prevFilename = prevSources[0]?.filename || null;
-
-    const isPrevKbConversation =
-      prevSources.length > 0 ||
-      (lastUserMsg?.content &&
-        (KB_INTENT_REGEX.test(lastUserMsg.content) ||
-          KB_PROCEDURAL_TERMS_REGEX.test(lastUserMsg.content) ||
-          availableKbDocs.some((d) =>
-            lastUserMsg.content.toLowerCase().includes(d.filename.toLowerCase())
-          )));
-
-    if (isPrevKbConversation) {
-      const isFollowupPhrase =
-        /^(what about|how about|and for|how often|what is the (inspection\s*frequency|interval|procedure|requirement|rule|step)|what are the|is there any|does it (say|mention|state|have)|what else|tell me more|elaborate on|any other)\b/i.test(
-          cleanMessage
-        ) ||
-        /\b(inspection\s*frequency|maintenance\s*interval|inspection\s*steps?|precautions?)\b/i.test(cleanMessage);
-
-      if (isFollowupPhrase) {
-        // If the previous turn specifically focused on a single document, preserve it
-        const uniquePrevDocIds = new Set(prevSources.map((s) => s.documentId).filter(Boolean));
-        const preserveDocId = uniquePrevDocIds.size === 1 ? Array.from(uniquePrevDocIds)[0] : prevDocId;
-        const preserveFilename = uniquePrevDocIds.size === 1 ? prevSources[0]?.filename : prevFilename;
-
-        return {
-          route: "KNOWLEDGE_BASE",
-          useRag: true,
-          reason: "kb_conversational_followup",
-          retrievalMode: preserveDocId ? "DOCUMENT_SPECIFIC" : "GLOBAL",
-          targetDocumentId: preserveDocId || null,
-          targetFilename: preserveFilename || null,
-        };
-      }
-    }
-  }
-
-  // 7. If no chat documents, but Knowledge Base exists and query asks for document topics/summary
-  if (!hasChatDocuments && hasKnowledgeBaseDocuments) {
-    const hasDocIntent = DOCUMENT_INTENT_REGEX.test(cleanMessage);
-    const hasDocSourcePhrase = DOCUMENT_SOURCE_PHRASES_REGEX.test(cleanMessage);
-    const hasDocTopic = DOCUMENT_TOPIC_TERMS_REGEX.test(cleanMessage);
-
-    if (
-      hasDocIntent ||
-      hasDocSourcePhrase ||
-      hasDocTopic ||
-      hasDocNoun ||
-      hasKbNoun ||
-      matchesDocKeyword
-    ) {
-      return {
-        route: "KNOWLEDGE_BASE",
-        useRag: true,
-        reason: "knowledge_base_topic",
-        retrievalMode: "GLOBAL",
-        targetDocumentId: null,
-        targetFilename: null,
-      };
-    }
-  }
-
-  // 8. Default to general path
+  // 3. Normal Chat Default -> GENERAL (Knowledge Base strictly OFF)
   return {
     route: "GENERAL",
     useRag: false,
-    reason: "general_question",
+    reason: "normal_chat_general_knowledge",
     retrievalMode: null,
     targetDocumentId: null,
     targetFilename: null,
+    cleanedQuery: cleanMessage,
   };
 }
 

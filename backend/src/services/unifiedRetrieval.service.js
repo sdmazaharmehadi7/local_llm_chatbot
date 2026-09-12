@@ -125,25 +125,35 @@ export async function executeUnifiedRetrieval({
           targetDocumentId: documentId ? String(documentId) : null,
           scoreThreshold,
           maxChunks: limit,
+          query,
         });
 
         kbContextText = kbContext.contextText || "";
         kbSources = kbContext.sources || [];
 
-        for (const match of kbMatches) {
-          const p = match.payload || {};
-          if (documentId && String(p.documentId) !== String(documentId)) {
-            continue;
+        if (kbContext.hasContext && kbSources.length > 0) {
+          const allowedDocKeys = new Set(
+            kbSources.map((s) => String(s.documentId || s.filename))
+          );
+          for (const match of kbMatches) {
+            const p = match.payload || {};
+            const docKey = String(p.documentId || p.filename || "");
+            if (!allowedDocKeys.has(docKey)) {
+              continue;
+            }
+            if (documentId && String(p.documentId) !== String(documentId)) {
+              continue;
+            }
+            normalizedResults.push({
+              documentId: p.documentId || match.id || "kb-doc",
+              filename: p.filename || "Knowledge Base Document",
+              page: p.page || p.pageNumber || 1,
+              chunkIndex: p.chunkIndex !== undefined ? p.chunkIndex : 0,
+              score: typeof match.score === "number" ? match.score : 1.0,
+              text: p.text || "",
+              source: "knowledge_base",
+            });
           }
-          normalizedResults.push({
-            documentId: p.documentId || match.id || "kb-doc",
-            filename: p.filename || "Knowledge Base Document",
-            page: p.page || p.pageNumber || 1,
-            chunkIndex: p.chunkIndex !== undefined ? p.chunkIndex : 0,
-            score: typeof match.score === "number" ? match.score : 1.0,
-            text: p.text || "",
-            source: "knowledge_base",
-          });
         }
       }
     } catch (kbErr) {

@@ -362,11 +362,15 @@ export async function retrieveKnowledgeBaseContext({
       };
     }
 
-    // 3. Assemble structured, deduplicated, and bounded context
-    // Enforces documentId validation and scoreThreshold validation
+    // 3. Assemble structured, deduplicated, and bounded context with adaptive relevance filtering
+    const retrievedDocNames = Array.from(
+      new Set(matches.map((m) => m.payload?.filename).filter(Boolean))
+    );
+
     const contextResult = buildKnowledgeBaseContext(matches, {
       targetDocumentId: documentId,
       scoreThreshold,
+      query: cleanQuery,
     });
 
     if (!contextResult.hasContext) {
@@ -375,6 +379,9 @@ export async function retrieveKnowledgeBaseContext({
         noRelevantChunks: true,
         contextText: "",
         sources: [],
+        candidatesCount: matches.length,
+        retrievedDocNames,
+        contextChunksCount: 0,
       };
     }
 
@@ -383,6 +390,7 @@ export async function retrieveKnowledgeBaseContext({
       contextText: contextResult.contextText,
       sources: contextResult.sources,
       candidatesCount: matches.length,
+      retrievedDocNames,
       contextChunksCount: contextResult.contextChunksCount || 0,
     };
   } catch (err) {

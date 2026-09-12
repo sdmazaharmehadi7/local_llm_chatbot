@@ -74,15 +74,39 @@ export const executeCodeTool = {
         ? context.sandboxRunner
         : null;
 
+      let result;
       if (runner) {
-        return await runner({ code: code.trim(), language, timeoutMs });
+        result = await runner({ code: code.trim(), language, timeoutMs });
+      } else {
+        result = await sandboxService.executeCode({
+          code: code.trim(),
+          language,
+          timeoutMs,
+        });
       }
 
-      return await sandboxService.executeCode({
-        code: code.trim(),
-        language,
-        timeoutMs,
-      });
+      const exitCode =
+        typeof result?.exitCode === "number"
+          ? result.exitCode
+          : (result?.success ? 0 : 1);
+      const isSuccess = result?.success === true && exitCode === 0 && !result?.timedOut;
+      const stdout = String(result?.stdout || "").trim();
+      const stderr = String(result?.stderr || "").trim();
+      const errorMsg =
+        result?.error ||
+        (!isSuccess ? stderr || `Process exited with code ${exitCode}` : undefined);
+
+      return {
+        success: isSuccess,
+        exitCode,
+        stdout,
+        stderr: stderr || (errorMsg && !isSuccess ? errorMsg : ""),
+        executionTimeMs: result?.executionTimeMs || 0,
+        timedOut: Boolean(result?.timedOut),
+        language: result?.language || language,
+        sandbox: result?.sandbox || { isolated: true },
+        ...(isSuccess ? {} : { error: errorMsg }),
+      };
     } catch (err) {
       return {
         success: false,

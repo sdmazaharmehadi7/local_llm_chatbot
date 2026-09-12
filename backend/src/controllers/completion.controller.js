@@ -626,6 +626,7 @@ export async function postCompletion(req, res) {
 
   // 7. RAG Router Decision
   const userQuery = incomingUserMsg?.content || "";
+  const requestMode = req.body.mode || req.headers["x-chat-mode"] || "normal";
   const previousHistory = dbMessages.slice(0, -1);
   const workspaceId = req.headers["x-workspace-id"] || req.workspaceId || "default";
 
@@ -636,6 +637,7 @@ export async function postCompletion(req, res) {
 
   const routeDecision = routeMessage({
     message: userQuery,
+    mode: requestMode,
     conversationHistory: previousHistory,
     hasChatDocuments,
     attachedFiles,
@@ -657,11 +659,20 @@ export async function postCompletion(req, res) {
   // - Does not emit any RAG status indicators.
   // - Routes directly to Qwen3 (or Gemini if requested for a pure general chat).
   if (effectiveRoute === "GENERAL" || !routeDecision.useRag) {
+    // Sanitize conversationContext to avoid context leakage from previous KB or tool turns
+    const isolatedContext = conversationContext.map((m) => {
+      if (m.role === "assistant" && typeof m.content === "string") {
+        const cleanContent = m.content.replace(/\n\nSources:\s*[\s\S]*$/i, "").trim();
+        return { ...m, content: cleanContent || m.content };
+      }
+      return m;
+    });
+
     if (isCloudModelId(targetModel) && !hasChatDocuments && !hasIncomingImage) {
-      return streamGeminiCompletion(res, conversationContext, chatId, targetModel, []);
+      return streamGeminiCompletion(res, isolatedContext, chatId, targetModel, []);
     }
 
-    return streamOllamaCompletion(res, conversationContext, targetModel, chatId, []);
+    return streamOllamaCompletion(res, isolatedContext, targetModel, chatId, []);
   }
 
   // ── KNOWLEDGE BASE QUESTION PATH ─────────────────────────────────────────
@@ -956,71 +967,79 @@ async function handleKnowledgeBaseCompletion({
     scoreThreshold: 0.35,
   });
 
-  // Debug logging per Part 24
+  // Debug logging per requirements
+  console.log(`\n[KB Retrieval]`);
+  console.log(`Query: ${userQuery.trim()}`);
+  console.log(`Candidates: ${kbResult.candidatesCount || 0}`);
+  console.log(`After relevance filtering: ${kbResult.contextChunksCount || 0}`);
+  console.log(`Selected sources:`);
+  if (!kbResult.sources || kbResult.sources.length === 0) {
+    console.log(`  (none)`);
+  } else {
+    kbResult.sources.forEach((s) => {
+      const pageStr = s.pageText || (s.page ? `Page ${s.page}` : "Page N/A");
+      const scoreStr = typeof s.score === "number" ? s.score.toFixed(4) : "N/A";
+      console.log(`- ${s.filename} | ${pageStr} | score: ${scoreStr}`);
+    });
+  }
+  console.log(`[KB] Query: ${userQuery.trim()}`);
+  console.log(`[KB] Retrieved chunks: ${kbResult.candidatesCount || 0}`);
+  console.log(`[KB] Retrieved documents:\n${(kbResult.retrievedDocNames || []).map((d) => `    ${d}`).join("\n") || "    (none)"}`);
+  console.log(`[KB] Source documents after deduplication:\n${(kbResult.sources || []).map((s) => `    ${s.filename}`).join("\n") || "    (none)"}\n`);
+
   console.log(
     `[KB_RAG] Query="${userQuery.slice(0, 40)}" | Route=KNOWLEDGE_BASE | Mode=${retrievalMode || (targetDocumentId ? "DOCUMENT_SPECIFIC" : "GLOBAL")} | Document=${targetFilename || "ALL"} (${targetDocumentId || "none"}) | Filter={scope:"knowledge_base",docId:${targetDocumentId ? `"${targetDocumentId}"` : "null"}} | Candidates=${kbResult.candidatesCount || 0} | ContextChunks=${kbResult.contextChunksCount || 0} | Sources=${kbResult.sources?.length || 0}`
   );
 
   await sleep(400);
 
-  // If Qdrant is unavailable: return concise error without crashing
-  if (kbResult.qdrantUnavailable) {
-    const errMsg =
-      "Knowledge Base retrieval is currently unavailable because the vector database is offline. Please ensure Qdrant is running.";
-    res.write(sseChunk({ type: "data-rag-status", id: "rag-status", data: { state: "GENERATING" } }));
-    res.write(sseChunk({ type: "text-start", id: "text-1" }));
-    res.write(sseChunk({ type: "text-delta", id: "text-1", delta: errMsg }));
-    res.write(sseChunk({ type: "text-end", id: "text-1" }));
-    res.write(sseChunk({ type: "finish-step" }));
-    res.write(sseChunk({ type: "finish", finishReason: "stop" }));
-    res.write("data: [DONE]\n\n");
-    res.end();
+  // Ensure conversation context uses clean query without /knowledgebase prefix
+  const cleanedConversationContext = (conversationContext || []).map((msg, idx) => {
+    if (idx === (conversationContext || []).length - 1 && msg.role === "user") {
+      return {
+        ...msg,
+        content: userQuery.trim(),
+      };
+    }
+    return msg;
+  });
 
-    await Message.findOneAndUpdate(
-      { _id: messageId, chatId },
+  // If no sufficiently relevant chunks found, or vector DB is unavailable:
+  // Fallback gracefully to the general model's internal knowledge!
+  // - Clearly tell the user that no sufficiently relevant Knowledge Base information was found.
+  // - Provide general model answer.
+  // - DO NOT attach fake or unrelated Knowledge Base citations (sources = []).
+  if (kbResult.noRelevantChunks || !kbResult.hasContext || !kbResult.contextText?.trim() || kbResult.qdrantUnavailable) {
+    console.log(
+      `[completion.controller] KB fallback to general model knowledge for query in workspace ${workspaceId}: "${userQuery.slice(0, 40)}"`
+    );
+
+    // Transition RAG status to GENERATING
+    res.write(
+      sseChunk({
+        type: "data-rag-status",
+        id: "rag-status",
+        data: { state: "GENERATING" },
+      })
+    );
+
+    const fallbackMessages = [
       {
-        $set: {
-          chatId,
-          role: "assistant",
-          content: errMsg,
-          parts: [{ type: "text", text: errMsg }],
-          model: targetModel,
-          createdAt: new Date(),
-        },
+        role: "system",
+        content:
+          "No sufficiently relevant documents were found in the Knowledge Base for this query. Clearly inform the user that no sufficiently relevant Knowledge Base information was found, and then answer their question based on general knowledge. Do not cite or fabricate any Knowledge Base sources.",
       },
-      { upsert: true, returnDocument: "after" }
-    ).catch(() => {});
-    return;
-  }
+      ...cleanedConversationContext.filter((m) => m.role !== "system"),
+    ];
 
-  // If no sufficiently relevant chunks found: return explicit message per Requirement 21
-  if (kbResult.noRelevantChunks || !kbResult.hasContext) {
-    console.log(`[completion.controller] No relevant KB chunks found for query in workspace ${workspaceId}.`);
-    const noInfoMsg = "I couldn't find relevant information in the Knowledge Base.";
-    res.write(sseChunk({ type: "data-rag-status", id: "rag-status", data: { state: "GENERATING" } }));
-    res.write(sseChunk({ type: "text-start", id: "text-1" }));
-    res.write(sseChunk({ type: "text-delta", id: "text-1", delta: noInfoMsg }));
-    res.write(sseChunk({ type: "text-end", id: "text-1" }));
-    res.write(sseChunk({ type: "finish-step" }));
-    res.write(sseChunk({ type: "finish", finishReason: "stop" }));
-    res.write("data: [DONE]\n\n");
-    res.end();
-
-    await Message.findOneAndUpdate(
-      { _id: messageId, chatId },
-      {
-        $set: {
-          chatId,
-          role: "assistant",
-          content: noInfoMsg,
-          parts: [{ type: "text", text: noInfoMsg }],
-          model: targetModel,
-          createdAt: new Date(),
-        },
-      },
-      { upsert: true, returnDocument: "after" }
-    ).catch(() => {});
-    return;
+    return streamOllamaCompletion(
+      res,
+      fallbackMessages,
+      targetModel,
+      chatId,
+      [], // zero sources! No fake citations!
+      { messageId, sseStarted: true }
+    );
   }
 
   // Transition RAG indicator to GENERATING
@@ -1042,17 +1061,6 @@ async function handleKnowledgeBaseCompletion({
       })
     );
   }
-
-  // Ensure conversation context uses clean query without /knowledgebase prefix
-  const cleanedConversationContext = (conversationContext || []).map((msg, idx) => {
-    if (idx === (conversationContext || []).length - 1 && msg.role === "user") {
-      return {
-        ...msg,
-        content: userQuery.trim(),
-      };
-    }
-    return msg;
-  });
 
   // Augment conversation context with Knowledge Base context
   const finalContext = buildAugmentedKnowledgeBaseMessages(

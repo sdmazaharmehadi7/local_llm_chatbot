@@ -81,6 +81,14 @@ Iterative Multi-Step Reasoning Policy:
    - Use "execute_code" ONLY when the user explicitly asks to run, execute, or test code in the secure container sandbox. Never execute code on the host machine.
 10. EVIDENCE & CITATIONS:
    - When returning "final", cite document names, page numbers, instrument/tag identifiers (e.g. PI-102B, bearing tag), and explicit calculation steps.
+11. CODE EXECUTION FAILURE HANDLING & DIAGNOSIS:
+   - When "execute_code" fails (Exit Code != 0, or Stderr/Error present):
+     * CAREFULLY INSPECT the failure details (Exit Code, Stderr, and Error message).
+     * DO NOT blindly call "execute_code" again with the identical failed code!
+     * If the code needs correction, call tool "coding" (Qwen2.5-Coder) with a targeted fix task specifying the exact error and Stderr so the code can be corrected.
+     * After "coding" returns the corrected code, call "execute_code" with the updated code.
+     * Once execution succeeds (Exit Code 0), return "final" summarizing the solution and output.
+     * Retry limit: Do not retry code execution more than 2 times. If execution fails after retry, return "final" diagnosing the error and providing the code.
 
 Strict Constraints:
 1. Return ONLY the raw JSON object. Never include markdown code fences, comments, or thinking tags.
@@ -198,10 +206,11 @@ ${boundedCode}`;
         const exitCode = obs.exitCode !== undefined ? obs.exitCode : (obs.success ? 0 : 1);
         const stdoutStr = obs.stdout ? `\n  Stdout:\n${obs.stdout.trim()}` : "";
         const stderrStr = obs.stderr ? `\n  Stderr:\n${obs.stderr.trim()}` : "";
+        const errDetail = obs.error && !obs.stderr?.includes(obs.error) ? `\n  Error: ${obs.error.trim()}` : "";
         const timeoutNotice = obs.timedOut ? " [TIMED OUT]" : "";
         return `Step ${idx + 1}:
   Action: Called tool "execute_code" in isolated sandbox (${obs.language || "python"})
-  Observation${statusText}${timeoutNotice}: Exit Code: ${exitCode}${stdoutStr}${stderrStr}`;
+  Observation${statusText}${timeoutNotice}: Exit Code: ${exitCode}${stdoutStr}${stderrStr}${errDetail}`;
       }
 
       // Format vision tool observations
@@ -635,6 +644,40 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
         valid: false,
         reason: `For document queries, retrieve_information must be used instead of execute_code.`,
       };
+    }
+
+    // Anti-repetition & Retry limit: Prevent identical blind retries of failed code
+    const currentCode = String(decision.input?.code || "").trim();
+    const previousExecuteSteps = steps.filter(
+      (s) => (s.toolName || s.tool) === "execute_code"
+    );
+
+    if (previousExecuteSteps.length >= 3) {
+      return {
+        valid: false,
+        reason: `Code execution retry limit reached (3 execution attempts). Do not call execute_code again; return final response diagnosing the execution output and error.`,
+      };
+    }
+
+    if (previousExecuteSteps.length > 0 && currentCode) {
+      const lastExecStep = previousExecuteSteps[previousExecuteSteps.length - 1];
+      const lastObs = lastExecStep.observation || lastExecStep.output;
+      const lastFailed =
+        lastExecStep.status === "failed" ||
+        (typeof lastObs === "object" &&
+          lastObs !== null &&
+          (lastObs.success === false ||
+            (typeof lastObs.exitCode === "number" && lastObs.exitCode !== 0)));
+
+      if (lastFailed) {
+        const lastCode = String(lastExecStep.input?.code || "").trim();
+        if (currentCode === lastCode) {
+          return {
+            valid: false,
+            reason: `Identical code execution retry prevented: The code failed with an error in the previous execution step. Do not blindly re-execute the identical failed code. Diagnose the failure from Stderr/Error and call the coding tool to fix the code first.`,
+          };
+        }
+      }
     }
   }
 

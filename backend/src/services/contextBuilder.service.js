@@ -22,10 +22,40 @@ const KB_SCORE_THRESHOLD =
   parseFloat(process.env.KB_SCORE_THRESHOLD) || 0.35;
 
 /**
+ * Extract meaningful search terms from a query string, filtering out punctuation
+ * and standard conversational/stop words.
+ *
+ * @param {string} query
+ * @returns {Array<string>}
+ */
+export function extractSignificantTerms(query = "") {
+  if (!query || typeof query !== "string") return [];
+
+  const stopWords = new Set([
+    "what", "is", "are", "the", "for", "with", "and", "or", "in", "on", "at",
+    "to", "from", "by", "about", "into", "through", "during", "before", "after",
+    "above", "below", "between", "under", "again", "further", "then", "once",
+    "here", "there", "when", "where", "why", "how", "all", "any", "both",
+    "each", "few", "more", "most", "other", "some", "such", "no", "nor",
+    "not", "only", "own", "same", "so", "than", "too", "very", "can", "will",
+    "just", "should", "now", "using", "use", "does", "did", "doing", "this",
+    "that", "these", "those", "have", "has", "had", "having", "please", "tell",
+    "find", "show", "give", "list", "document", "documents", "knowledgebase"
+  ]);
+
+  return query
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !stopWords.has(w));
+}
+
+/**
  * Build a structured Knowledge Base context block from retrieved Qdrant points.
  *
  * @param {Array<{score: number, payload: object}>} points - Raw Qdrant matches
  * @param {object} [options]
+ * @param {string} [options.query=""] - User query string for term relevance assessment
  * @param {string} [options.targetDocumentId] - If document-specific, strictly filter to this ID
  * @param {number} [options.scoreThreshold=KB_SCORE_THRESHOLD] - Minimum similarity score
  * @param {number} [options.maxChunks=KB_MAX_CONTEXT_CHUNKS] - Maximum total chunks in final context
@@ -33,7 +63,8 @@ const KB_SCORE_THRESHOLD =
  * @returns {{
  *   hasContext: boolean,
  *   contextText: string,
- *   sources: Array<{documentId: string, filename: string, page?: number, section?: string, chunkIndex: number}>
+ *   sources: Array<{documentId: string, filename: string, page?: number, section?: string, chunkIndex: number, score?: number}>,
+ *   contextChunksCount: number
  * }}
  */
 export function buildKnowledgeBaseContext(points = [], options = {}) {
@@ -42,20 +73,23 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
   const scoreThreshold =
     options.scoreThreshold !== undefined ? options.scoreThreshold : KB_SCORE_THRESHOLD;
   const targetDocumentId = options.targetDocumentId ? String(options.targetDocumentId) : null;
+  const query = options.query || "";
 
   if (!Array.isArray(points) || points.length === 0) {
     return {
       hasContext: false,
       contextText: "",
       sources: [],
+      contextChunksCount: 0,
     };
   }
 
-  // 1. Strict Filtering:
-  // - scoreThreshold: remove weak/irrelevant chunks (Part 7)
-  // - targetDocumentId: if document-specific, discard ANY chunk not matching targetId (Part 6)
-  // - scope: strictly ensure scope === "knowledge_base"
-  const qualifiedPoints = points.filter((pt) => {
+  // 1. Initial Filtering:
+  // - text presence
+  // - scope check: scope === "knowledge_base"
+  // - targetDocumentId: if document-specific, discard ANY chunk not matching targetId
+  // - scoreThreshold: remove chunks below absolute minimum threshold
+  const initialPoints = points.filter((pt) => {
     const p = pt.payload || {};
     const text = (p.text || "").trim();
     if (!text) return false;
@@ -68,11 +102,108 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
       return false;
     }
 
-    // Relevance threshold check
+    // Basic threshold check
     if (typeof pt.score === "number" && pt.score < scoreThreshold) {
       return false;
     }
 
+    return true;
+  });
+
+  if (initialPoints.length === 0) {
+    return {
+      hasContext: false,
+      contextText: "",
+      sources: [],
+      contextChunksCount: 0,
+    };
+  }
+
+  // 2. Relative Relevance & Topic Filtering:
+  // Separate retrieved candidates from actual relevant context and cited sources.
+  // Prevent unrelated KB documents from sneaking in due to dense embedding floor similarities (~0.55 - 0.65).
+  const queryTerms = extractSignificantTerms(query);
+  const topScore = Math.max(
+    ...initialPoints.map((pt) => (typeof pt.score === "number" ? pt.score : 0))
+  );
+
+  // Group candidate points by document to assess document-level relevance and term matching
+  const docCandMap = new Map();
+  for (const pt of initialPoints) {
+    const p = pt.payload || {};
+    const docKey = String(p.documentId || p.filename || "unknown");
+    if (!docCandMap.has(docKey)) {
+      docCandMap.set(docKey, {
+        docKey,
+        documentId: p.documentId || null,
+        filename: p.filename || "Document.pdf",
+        bestScore: typeof pt.score === "number" ? pt.score : 0,
+        points: [],
+        combinedText: "",
+      });
+    }
+    const cand = docCandMap.get(docKey);
+    const score = typeof pt.score === "number" ? pt.score : 0;
+    if (score > cand.bestScore) cand.bestScore = score;
+    cand.points.push(pt);
+    cand.combinedText += " " + (p.filename || "") + " " + (p.text || "");
+  }
+
+  // Determine which documents qualify based on top score gap and term matching
+  const qualifyingDocKeys = new Set();
+  for (const [docKey, cand] of docCandMap.entries()) {
+    // If targetDocumentId is explicitly set, the doc matches by definition
+    if (targetDocumentId && String(cand.documentId) === targetDocumentId) {
+      qualifyingDocKeys.add(docKey);
+      continue;
+    }
+
+    const docTextLower = cand.combinedText.toLowerCase();
+    const docTermMatches = queryTerms.reduce((count, term) => {
+      return count + (docTextLower.includes(term) ? 1 : 0);
+    }, 0);
+
+    const scoreGap = topScore - cand.bestScore;
+
+    let qualifies = false;
+    if (topScore >= 0.70) {
+      // Strong semantic match exists (e.g. 0.75 - 0.95)
+      // Chunks within 0.08 of topScore qualify
+      // Or chunks within 0.12 with at least 2 distinct query term matches qualify
+      if (scoreGap <= 0.08) {
+        qualifies = true;
+      } else if (scoreGap <= 0.12 && docTermMatches >= 2) {
+        qualifies = true;
+      }
+    } else {
+      // Moderate semantic match (e.g. 0.55 - 0.70)
+      if (queryTerms.length === 0) {
+        qualifies = scoreGap <= 0.15;
+      } else if (docTermMatches >= 2) {
+        qualifies = scoreGap <= 0.06;
+      } else if (docTermMatches >= 1) {
+        qualifies = scoreGap <= 0.04;
+      } else {
+        qualifies = scoreGap <= 0.015;
+      }
+    }
+
+    if (qualifies) {
+      qualifyingDocKeys.add(docKey);
+    }
+  }
+
+  // Filter points to only those from qualifying documents and with sufficient chunk score
+  const qualifiedPoints = initialPoints.filter((pt) => {
+    const p = pt.payload || {};
+    const docKey = String(p.documentId || p.filename || "unknown");
+    if (!qualifyingDocKeys.has(docKey)) return false;
+
+    // Discard chunks with extreme drop from the document's or global top score
+    const ptScore = typeof pt.score === "number" ? pt.score : 0;
+    if (topScore >= 0.70 && topScore - ptScore > 0.15) {
+      return false;
+    }
     return true;
   });
 
@@ -81,10 +212,18 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
       hasContext: false,
       contextText: "",
       sources: [],
+      contextChunksCount: 0,
     };
   }
 
-  // 2. Stable Chunk Deduplication (Part 9)
+  // Sort qualified points by score descending so the most relevant chunks are chosen first
+  qualifiedPoints.sort((a, b) => {
+    const scoreA = typeof a.score === "number" ? a.score : 0;
+    const scoreB = typeof b.score === "number" ? b.score : 0;
+    return scoreB - scoreA;
+  });
+
+  // 3. Stable Chunk Deduplication & maxChunks cap
   // Stable identity: documentId + page + chunkIndex
   const seenChunkKeys = new Set();
   const deduplicatedChunks = [];
@@ -120,10 +259,11 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
       hasContext: false,
       contextText: "",
       sources: [],
+      contextChunksCount: 0,
     };
   }
 
-  // 3. Group chunks by Document -> Section/Page order
+  // 4. Group chunks by Document -> Section/Page order
   const docGroups = new Map();
   for (const chunk of deduplicatedChunks) {
     const docKey = chunk.documentId || chunk.filename;
@@ -141,7 +281,7 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
     });
   }
 
-  // 4. Assemble structured context respecting maxChars budget
+  // 5. Assemble structured context respecting maxChars budget
   let totalChars = 0;
   const sectionsOutput = [];
   const finalContextChunks = [];
@@ -182,8 +322,8 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
 
   const contextText = sectionsOutput.join("\n\n---\n\n");
 
-  // 5. Source Attribution and Deduplication
-  // Each unique document resource produces exactly ONE source entry, aggregating all cited pages.
+  // 6. Source Attribution and Deduplication
+  // Each unique document resource produces exactly ONE source entry, aggregating all cited pages and best score.
   const docSourcesMap = new Map();
 
   for (const chunk of finalContextChunks) {
@@ -195,10 +335,15 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
         pages: new Set(),
         section: chunk.section || undefined,
         chunkIndex: chunk.chunkIndex,
+        score: chunk.score || 0,
       });
     }
+    const entry = docSourcesMap.get(docKey);
     if (chunk.page !== undefined && chunk.page !== null) {
-      docSourcesMap.get(docKey).pages.add(Number(chunk.page));
+      entry.pages.add(Number(chunk.page));
+    }
+    if (typeof chunk.score === "number" && chunk.score > entry.score) {
+      entry.score = chunk.score;
     }
   }
 
@@ -220,6 +365,7 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
       pageText,
       section: doc.section,
       chunkIndex: doc.chunkIndex,
+      score: doc.score,
     });
   }
 
@@ -261,10 +407,8 @@ ${contextText}
 INSTRUCTIONS:
 1. Answer the user's question using the provided Knowledge Base context.
 2. Rely strictly on the facts in the context. Do not fabricate, extrapolate, or invent information not present in the documents.
-3. If the provided Knowledge Base context does not contain the answer, explicitly state:
-"I couldn't find relevant information in the Knowledge Base."
-4. Keep answers concise, factual, and clear unless the user requests in-depth detail.
-5. At the end of your response, list the sources used in this exact format:
+3. Keep answers concise, factual, and clear unless the user requests in-depth detail.
+4. At the end of your response, list the sources used in this exact format:
 Sources:
 ${sourcesList || "- Knowledge Base"}`;
 

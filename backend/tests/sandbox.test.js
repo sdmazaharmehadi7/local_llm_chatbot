@@ -312,6 +312,155 @@ print(f"SECRET_LEAKED: {has_secret}")
     pass("TEST 3.2 passed: Policy guard blocks execute_code on conceptual questions");
   }
 
+  // TEST 3.3: Code Execution Failure Recovery (Coding -> Execute -> Failure (Exit 1) -> Qwen3 analyzes Stderr -> Coding Fix -> Execute -> Success -> Final)
+  {
+    let stepCount = 0;
+    agentGraphService.setAgentBrainLlmClient(async (messages) => {
+      stepCount++;
+      if (stepCount === 1) {
+        // Step 1: Brain calls coding tool to generate initial prime numbers script
+        return JSON.stringify({
+          action: "tool",
+          tool: "coding",
+          reason: "Generate Python code to list prime numbers up to 20.",
+          input: { task: "Write a Python script to find prime numbers up to 20", language: "python" },
+        });
+      }
+      if (stepCount === 2) {
+        // Step 2: Brain calls execute_code to run the initial code
+        return JSON.stringify({
+          action: "tool",
+          tool: "execute_code",
+          reason: "Run initial code in sandbox.",
+          input: {
+            code: "primes = [p for p in range(2, 20) if is_prime(p)]\nprint(primes)",
+            language: "python",
+          },
+        });
+      }
+      if (stepCount === 3) {
+        // Step 3: Brain inspects failure (NameError: name 'is_prime' is not defined) and calls coding to fix it
+        const lastMsg = messages[messages.length - 1]?.content || "";
+        assert.ok(lastMsg.includes("Exit Code: 1") || lastMsg.includes("NameError"), "Brain must receive failure observation");
+        return JSON.stringify({
+          action: "tool",
+          tool: "coding",
+          reason: "Fix the NameError by defining the is_prime helper function.",
+          input: {
+            task: "Fix the NameError by implementing is_prime helper and printing primes up to 20",
+            language: "python",
+          },
+        });
+      }
+      if (stepCount === 4) {
+        // Step 4: Brain calls execute_code with the corrected code
+        return JSON.stringify({
+          action: "tool",
+          tool: "execute_code",
+          reason: "Execute corrected prime numbers code.",
+          input: {
+            code: "def is_prime(n):\n    return n > 1 and all(n % i != 0 for i in range(2, int(n**0.5) + 1))\nprimes = [p for p in range(2, 20) if is_prime(p)]\nprint(primes)",
+            language: "python",
+          },
+        });
+      }
+      // Step 5: Brain synthesizes the final answer
+      return JSON.stringify({
+        action: "final",
+        reason: "Code executed successfully after fix; primes verified.",
+        answer: "The prime numbers up to 20 are [2, 3, 5, 7, 11, 13, 17, 19].",
+      });
+    });
+
+    agentGraphService.setCoderLlmClient(async (messages, options) => {
+      const task = options?.task || "";
+      if (task.includes("Fix")) {
+        return "def is_prime(n):\n    return n > 1 and all(n % i != 0 for i in range(2, int(n**0.5) + 1))\nprimes = [p for p in range(2, 20) if is_prime(p)]\nprint(primes)";
+      }
+      return "primes = [p for p in range(2, 20) if is_prime(p)]\nprint(primes)";
+    });
+
+    const agentResult = await runAgentTask({
+      message: "write a Python code for prime numbers and run it",
+      userId: "test-user-primes",
+    });
+
+    assert.strictEqual(agentResult.success, true);
+    assert.strictEqual(agentResult.steps.length, 4, "Must execute coding -> execute (fail) -> coding (fix) -> execute (success)");
+    assert.strictEqual(agentResult.steps[0].tool, "coding");
+    assert.strictEqual(agentResult.steps[1].tool, "execute_code");
+    assert.strictEqual(agentResult.steps[1].status, "failed");
+    assert.strictEqual(agentResult.steps[1].observation.exitCode, 1);
+    assert.ok(agentResult.steps[1].observation.stderr.includes("NameError"));
+
+    assert.strictEqual(agentResult.steps[2].tool, "coding");
+    assert.strictEqual(agentResult.steps[3].tool, "execute_code");
+    assert.strictEqual(agentResult.steps[3].status, "completed");
+    assert.strictEqual(agentResult.steps[3].observation.exitCode, 0);
+    assert.ok(agentResult.steps[3].observation.stdout.includes("2, 3, 5, 7"));
+    assert.ok(agentResult.response.includes("2, 3, 5, 7"));
+
+    pass("TEST 3.3 passed: Failure recovery loop: Coding -> Execute (fail) -> Qwen3 analyzes stderr -> Coding fix -> Execute -> Success -> Final");
+  }
+
+  // TEST 3.4: Policy Guard Blocks Identical Blind Re-execution of Failed Code
+  {
+    const failedSteps = [
+      {
+        tool: "execute_code",
+        toolName: "execute_code",
+        status: "failed",
+        input: { code: "x = 1 / 0", language: "python" },
+        observation: {
+          success: false,
+          exitCode: 1,
+          stderr: "ZeroDivisionError: division by zero",
+          error: "ZeroDivisionError: division by zero",
+        },
+      },
+    ];
+
+    // Attempting to execute the identical code again must be blocked
+    const blindRetryDecision = validateToolSelectionPolicy(
+      { action: "tool", tool: "execute_code", input: { code: "x = 1 / 0", language: "python" } },
+      { userRequest: "run this code", steps: failedSteps }
+    );
+
+    assert.strictEqual(blindRetryDecision.valid, false);
+    assert.ok(
+      blindRetryDecision.reason.includes("Identical code execution retry prevented"),
+      `Expected anti-repetition rejection reason, got: ${blindRetryDecision.reason}`
+    );
+
+    // Executing modified/fixed code must be allowed
+    const modifiedCodeDecision = validateToolSelectionPolicy(
+      { action: "tool", tool: "execute_code", input: { code: "x = 10 / 2", language: "python" } },
+      { userRequest: "run this code", steps: failedSteps }
+    );
+    assert.strictEqual(modifiedCodeDecision.valid, true);
+
+    pass("TEST 3.4 passed: Policy guard blocks identical blind re-execution of failed code while allowing modified code");
+  }
+
+  // TEST 3.5: Execution Retry Limit (max 3 attempts)
+  {
+    const threeAttemptsSteps = [
+      { tool: "execute_code", input: { code: "run1" }, status: "failed", observation: { exitCode: 1 } },
+      { tool: "execute_code", input: { code: "run2" }, status: "failed", observation: { exitCode: 1 } },
+      { tool: "execute_code", input: { code: "run3" }, status: "failed", observation: { exitCode: 1 } },
+    ];
+
+    const retryLimitDecision = validateToolSelectionPolicy(
+      { action: "tool", tool: "execute_code", input: { code: "run4" } },
+      { userRequest: "run code", steps: threeAttemptsSteps }
+    );
+
+    assert.strictEqual(retryLimitDecision.valid, false);
+    assert.ok(retryLimitDecision.reason.includes("retry limit reached"));
+
+    pass("TEST 3.5 passed: Policy guard enforces execution retry limit (max 3 execution attempts)");
+  }
+
   agentGraphService.resetAgentBrainLlmClient();
   agentGraphService.resetCoderLlmClient();
 

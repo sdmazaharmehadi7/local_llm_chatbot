@@ -67,7 +67,7 @@ export function normalizeActionFingerprint(toolName, input = {}) {
   if (normTool === "execute_code") {
     const code = String(input?.code || "").trim();
     const lang = String(input?.language || "python").trim().toLowerCase();
-    return `${normTool}:::lang=${lang}:::code=${code.slice(0, 100)}`;
+    return `${normTool}:::lang=${lang}:::code=${code}`;
   }
   if (normTool === "vision") {
     const prompt = String(input?.prompt || "").trim().toLowerCase();

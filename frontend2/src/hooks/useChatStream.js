@@ -77,6 +77,11 @@ export function useChatStream({
               fileIds: m.fileIds || pendingFileIdsRef.current.get(m.id) || [],
             }));
           const normalized = formatMessagesForTransport([...persistedForTransport, ...newMessages]);
+          const lastMsg = normalized[normalized.length - 1];
+          const lastText = lastMsg ? (lastMsg.content || "") : "";
+          const isKb = /^\/(?:knowledgebase|kb)(?::|\s+|$)/i.test(lastText);
+          const isAgent = /^\/(?:agent|framework-agent|agent-framework|langgraph)(?::|\s+|$)/i.test(lastText);
+          const mode = isKb ? "knowledgebase" : isAgent ? "agent" : "normal";
 
           return {
             body: {
@@ -85,6 +90,7 @@ export function useChatStream({
               messages: normalized,
               webSearch: webSearchRef.current,
               memoryEnabled: memoryEnabledRef.current,
+              mode,
             },
           };
         },

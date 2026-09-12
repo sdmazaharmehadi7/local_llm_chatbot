@@ -188,7 +188,7 @@ router.post("/:id/messages", async (req, res) => {
           createdAt: messageCreatedAt,
         },
       },
-      { upsert: true, new: true, returnDocument: "after" }
+      { upsert: true, returnDocument: "after" }
     );
 
     // Update parent chat's updatedAt and title if first user message
