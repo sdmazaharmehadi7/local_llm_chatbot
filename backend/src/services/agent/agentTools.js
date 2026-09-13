@@ -23,6 +23,12 @@ import retrievalTool from "./tools/retrieval.tool.js";
 import codingTool from "./tools/coding.tool.js";
 import executeCodeTool from "./tools/executeCode.tool.js";
 import visionTool from "./tools/vision.tool.js";
+import unitConverterTool from "./tools/unitConverter.tool.js";
+import engineeringFormulaTool from "./tools/engineeringFormula.tool.js";
+import thresholdCheckerTool from "./tools/thresholdChecker.tool.js";
+import statisticsTool from "./tools/statistics.tool.js";
+import dateTimeTool from "./tools/dateTime.tool.js";
+import documentExtractionTool from "./tools/documentExtraction.tool.js";
 
 /**
  * Zod schema for calculator tool
@@ -139,6 +145,62 @@ export const VisionSchema = z.object({
 });
 
 /**
+ * Zod schema for unit converter tool
+ */
+export const UnitConverterSchema = z.object({
+  value: z.number().describe("The numerical engineering value to convert."),
+  sourceUnit: z.string().min(1, "Source unit must not be empty").describe("The source engineering unit (e.g. 'bar', 'psi', 'kPa', 'MPa', '°C', '°F', 'K', 'mm', 'cm', 'm', 'inch', 'ft', 'g', 'kg', 'W', 'kW', 'HP', 'L/min', 'm³/h')."),
+  targetUnit: z.string().min(1, "Target unit must not be empty").describe("The target engineering unit to convert into (e.g. 'psi', 'bar', '°F', 'kW', 'm³/h')."),
+});
+
+/**
+ * Zod schema for engineering formula tool
+ */
+export const EngineeringFormulaSchema = z.object({
+  formula: z.string().min(1, "Formula name must not be empty").describe("The registered engineering formula identifier or name (e.g. 'pump_torque', 'pump_power', 'pump_speed')."),
+  parameters: z.record(z.any()).describe("Numerical parameters required by the formula (e.g. { P: 22, N: 960 } for torque)."),
+});
+
+/**
+ * Zod schema for threshold / limit checker tool
+ */
+export const ThresholdCheckerSchema = z.object({
+  value: z.number().describe("The measured engineering value to compare."),
+  limit: z.any().describe("The allowed limit value or operating envelope (e.g. 5, or [2, 5], or { min: 2, max: 5 })."),
+  comparison: z.string().optional().default("greater_than").describe("Comparison type: 'greater_than', 'less_than', 'equal_to', 'within_range', or 'outside_range'."),
+  unit: z.string().optional().describe("Optional engineering measurement unit (e.g. 'mm/s', 'bar', '°C')."),
+});
+
+/**
+ * Zod schema for statistics tool
+ */
+export const StatisticsSchema = z.object({
+  values: z.array(z.number()).min(1, "Values array must contain at least one number").describe("List of numerical engineering measurements or readings to analyze (e.g. [4.2, 5.1, 4.8, 6.0, 5.4])."),
+  operations: z.array(z.string()).optional().describe("Optional operations: 'count', 'sum', 'mean', 'median', 'minimum', 'maximum', 'range', 'standard_deviation', 'percentage_change', or 'all'."),
+});
+
+/**
+ * Zod schema for date/time tool
+ */
+export const DateTimeSchema = z.object({
+  operation: z.string().min(1, "Operation must not be empty").describe("Date/time operation: 'current_date', 'current_time', 'date_difference', 'add_days', 'subtract_days', 'add_months', 'subtract_months', 'compare_dates', or 'identify_overdue'."),
+  date: z.string().optional().describe("Target or base date (e.g. '2026-09-01' or '1 September 2026')."),
+  date1: z.string().optional().describe("First date for difference or comparison."),
+  date2: z.string().optional().describe("Second date for difference or comparison."),
+  amount: z.number().optional().describe("Amount of days or months to add or subtract."),
+  unit: z.string().optional().describe("Optional time unit ('days' or 'months')."),
+  referenceDate: z.string().optional().describe("Optional reference date for comparison or overdue check."),
+});
+
+/**
+ * Zod schema for document extraction tool
+ */
+export const DocumentExtractionSchema = z.object({
+  text: z.string().min(1, "Document text must not be empty").describe("The document text, OCR output, or inspection report excerpt to extract structured fields from."),
+  fields: z.array(z.string()).optional().describe("Optional list of specific fields to extract (e.g. ['equipment_id', 'inspection_date', 'vibration_value']). If omitted, extracts all detected fields."),
+});
+
+/**
  * Factory creating LangChain StructuredTool instances bound to caller context.
  *
  * @param {object} [context={}]
@@ -219,7 +281,86 @@ export function createAgentTools(context = {}) {
     },
   });
 
-  return [calcTool, textTool, retrieveTool, codeTool, execTool, visTool];
+  const unitTool = new DynamicStructuredTool({
+    name: "unit_converter",
+    description:
+      "Performs deterministic engineering unit conversions. Support: pressure (bar, psi, kPa, MPa), temperature (°C, °F, K), length (mm, cm, m, inch, ft), mass (g, kg), power (W, kW, HP), flow (L/min, m³/h). Input: value, sourceUnit, targetUnit.",
+    schema: UnitConverterSchema,
+    func: async (input) => {
+      const res = await unitConverterTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  const formulaTool = new DynamicStructuredTool({
+    name: "engineering_formula",
+    description:
+      "Executes approved deterministic engineering formulas from the catalog. Supports pump torque (T = P * 9550 / N), pump power (P = T * N / 9550), and pump speed (N = P * 9550 / T). Input: formula, parameters.",
+    schema: EngineeringFormulaSchema,
+    func: async (input) => {
+      const res = await engineeringFormulaTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  const thresholdTool = new DynamicStructuredTool({
+    name: "threshold_checker",
+    description:
+      "Compares a measured engineering value against an allowed limit or range. Computes status ('ABOVE_LIMIT', 'BELOW_LIMIT', 'WITHIN_RANGE', 'OUTSIDE_RANGE'), difference, and percentage exceedance. Input: value, limit, comparison, unit.",
+    schema: ThresholdCheckerSchema,
+    func: async (input) => {
+      const res = await thresholdCheckerTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  const statsTool = new DynamicStructuredTool({
+    name: "statistics",
+    description:
+      "Performs deterministic statistical calculations on numerical engineering data (count, sum, mean, median, minimum, maximum, range, standard_deviation, percentage_change). Input: values, operations.",
+    schema: StatisticsSchema,
+    func: async (input) => {
+      const res = await statisticsTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  const dtTool = new DynamicStructuredTool({
+    name: "date_time",
+    description:
+      "Performs deterministic date/time operations locally using system time. Supports: current_date, current_time, date_difference, add_days, subtract_days, add_months, subtract_months, compare_dates, identify_overdue.",
+    schema: DateTimeSchema,
+    func: async (input) => {
+      const res = await dateTimeTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  const docExtractTool = new DynamicStructuredTool({
+    name: "document_extraction",
+    description:
+      "Extracts structured engineering fields (equipment IDs, inspection dates, pressure readings, temperature readings, vibration values, serial numbers, metadata, tables) from supplied document text. Does NOT replace RAG.",
+    schema: DocumentExtractionSchema,
+    func: async (input) => {
+      const res = await documentExtractionTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  return [
+    calcTool,
+    textTool,
+    retrieveTool,
+    codeTool,
+    execTool,
+    visTool,
+    unitTool,
+    formulaTool,
+    thresholdTool,
+    statsTool,
+    dtTool,
+    docExtractTool,
+  ];
 }
 
 /**
@@ -265,6 +406,13 @@ export default {
   CodingSchema,
   ExecuteCodeSchema,
   VisionSchema,
+  UnitConverterSchema,
+  EngineeringFormulaSchema,
+  ThresholdCheckerSchema,
+  StatisticsSchema,
+  DateTimeSchema,
+  DocumentExtractionSchema,
   createAgentTools,
   getAgentToolsMetadata,
 };
+

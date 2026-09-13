@@ -72,16 +72,23 @@ Iterative Multi-Step Reasoning Policy:
    - When a request requires both visual inspection and calculation: FIRST extract values using "vision", inspect the returned data, and THEN call "calculator" on the numbers.
    - Once all numbers are calculated, return "final" synthesizing the complete answer.
 8. THRESHOLD COMPARISON & PASS/FAIL CRITERIA:
-   - When the user asks a verification question (e.g., "Does it pass?"): after calculating the result, compare it against the threshold/allowable limit in the final answer (e.g. 68.9% <= 100% -> PASS).
-9. MINIMAL & PURPOSEFUL TOOL USAGE:
-   - If a question is general conversation or conceptual (e.g. "Explain what an API is"), answer directly without tools.
-   - Do not call calculator or text_transform on questions that do not need them.
+   - When the user asks a verification question (e.g., "Does it pass?"): after calculating the result or retrieving values, compare it against the threshold/allowable limit in the final answer (e.g. 68.9% <= 100% -> PASS).
+9. DETERMINISTIC INDUSTRIAL TOOLS POLICY:
+   - Unit Converter ("unit_converter"): Use ONLY for engineering unit conversions (pressure: bar, psi, kPa, MPa; temp: °C, °F, K; length: mm, cm, m, inch, ft; mass: g, kg; power: W, kW, HP; flow: L/min, m³/h). Pass value, sourceUnit, and targetUnit. Never calculate conversions in Qwen3 when unit_converter is available.
+   - Engineering Formula ("engineering_formula"): Use ONLY for approved registered engineering formulas (e.g. pump torque T = P * 9550 / N, pump power P = T * N / 9550, pump speed N = P * 9550 / T). Never invent formulas. Pass formula and required parameters.
+   - Threshold Checker ("threshold_checker"): Use ONLY for comparing a measured engineering value against an allowed limit or operating envelope. Do NOT invent limits. If the limit is in documents/KB, FIRST retrieve it using "retrieve_information", then pass the measured value and retrieved limit to "threshold_checker".
+   - Statistics ("statistics"): Use ONLY for statistical calculations on numerical data lists (count, sum, mean, median, minimum, maximum, range, standard deviation, percentage change). The tool strictly computes; you (Qwen3) interpret the industrial meaning and safety decisions.
+   - Date / Time ("date_time"): Use ONLY for deterministic local date/time calculations (current date/time, date difference in days, add/subtract days/months, compare dates, identify overdue maintenance). Never use external time APIs.
+   - Document Extraction ("document_extraction"): Use ONLY for extracting structured fields (equipment IDs, inspection dates, pressure/temp/vibration readings, serial numbers, tables) from provided document text or OCR output. Does NOT replace RAG (RAG searches KB; Document Extraction parses text). If the document is an image, call "vision" first to inspect/transcribe, then "document_extraction" if structured parsing is needed.
+10. MINIMAL & PURPOSEFUL TOOL USAGE:
+   - If a question is general conversation, conceptual, or definition (e.g. "Explain what preventive maintenance means", "Explain what an API is"), answer directly without tools.
+   - Do not call tools on questions that do not need them.
    - Use "vision" ONLY when the user's request involves visual analysis of an image, photo, diagram, schematic, chart, or visual document, or when an image is attached. Never call "vision" for text-only questions or when no image is involved.
    - Use "coding" ONLY for writing, refactoring, or generating code using Qwen2.5-Coder.
    - Use "execute_code" ONLY when the user explicitly asks to run, execute, or test code in the secure container sandbox. Never execute code on the host machine.
-10. EVIDENCE & CITATIONS:
+11. EVIDENCE & CITATIONS:
    - When returning "final", cite document names, page numbers, instrument/tag identifiers (e.g. PI-102B, bearing tag), and explicit calculation steps.
-11. CODE EXECUTION FAILURE HANDLING & DIAGNOSIS:
+12. CODE EXECUTION FAILURE HANDLING & DIAGNOSIS:
    - When "execute_code" fails (Exit Code != 0, or Stderr/Error present):
      * CAREFULLY INSPECT the failure details (Exit Code, Stderr, and Error message).
      * DO NOT blindly call "execute_code" again with the identical failed code!
@@ -225,6 +232,48 @@ ${boundedCode}`;
   Action: Called tool "vision" (Qwen2.5-VL) for visual inspection: ${JSON.stringify(s.input?.prompt || s.input || {})}
   Observation${statusText}: Visual Analysis:
 ${boundedAnalysis}${measurements}`;
+      }
+
+      // Format unit_converter tool observations
+      if (toolName === "unit_converter" && typeof obs === "object" && obs !== null) {
+        return `Step ${idx + 1}:
+  Action: Called tool "unit_converter" to convert ${s.input?.value} ${s.input?.sourceUnit} to ${s.input?.targetUnit}
+  Observation${statusText}: Conversion Result: ${obs.formatted || `${obs.inputValue} ${obs.sourceUnit} = ${obs.convertedValue} ${obs.targetUnit}`}`;
+      }
+
+      // Format engineering_formula tool observations
+      if (toolName === "engineering_formula" && typeof obs === "object" && obs !== null) {
+        return `Step ${idx + 1}:
+  Action: Called tool "engineering_formula" for formula "${s.input?.formula}" with parameters ${JSON.stringify(s.input?.parameters || {})}
+  Observation${statusText}: Calculated Result: ${obs.formatted || `${obs.formulaName} = ${obs.calculatedResult} ${obs.unit}`}`;
+      }
+
+      // Format threshold_checker tool observations
+      if (toolName === "threshold_checker" && typeof obs === "object" && obs !== null) {
+        return `Step ${idx + 1}:
+  Action: Called tool "threshold_checker" to compare value ${s.input?.value} against limit ${JSON.stringify(s.input?.limit)}
+  Observation${statusText}: Limit Check Result: ${obs.formatted || `Status: ${obs.status}, Difference: ${obs.difference}, Exceedance: ${obs.percentageDifference}%`}`;
+      }
+
+      // Format statistics tool observations
+      if (toolName === "statistics" && typeof obs === "object" && obs !== null) {
+        return `Step ${idx + 1}:
+  Action: Called tool "statistics" on ${(s.input?.values || []).length} numerical values
+  Observation${statusText}: Statistical Results: ${obs.formatted || JSON.stringify(obs.results)}`;
+      }
+
+      // Format date_time tool observations
+      if (toolName === "date_time" && typeof obs === "object" && obs !== null) {
+        return `Step ${idx + 1}:
+  Action: Called tool "date_time" for operation "${s.input?.operation}"
+  Observation${statusText}: Date/Time Result: ${obs.formatted || JSON.stringify(obs)}`;
+      }
+
+      // Format document_extraction tool observations
+      if (toolName === "document_extraction" && typeof obs === "object" && obs !== null) {
+        return `Step ${idx + 1}:
+  Action: Called tool "document_extraction" for fields ${JSON.stringify(s.input?.fields || ["all"])}
+  Observation${statusText}: Extracted Fields: ${obs.formatted || JSON.stringify(obs.extractedFields)}`;
       }
 
       const obsStr = typeof obs === "object" ? JSON.stringify(obs) : String(obs || "No output");
@@ -707,6 +756,81 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
       return {
         valid: false,
         reason: `The vision tool cannot be called when no image is provided and the request does not involve visual inspection.`,
+      };
+    }
+  }
+
+  // 8. INDUSTRIAL TOOLS POLICY GUARDS:
+  const isConceptualOrExplanation =
+    /^(explain|what is|what are|what does|how does|why is|difference between|overview of|define)\b/i.test(
+      userRequest
+    );
+
+  if (toolName === "unit_converter") {
+    const mentionsConversion = /\b(convert|conversion|in psi|in bar|to psi|to bar|to kpa|to mpa|to °f|to °c|to k|to kw|to hp|to mm|to inch|to ft|to m3\/h|to l\/min)\b/i.test(userRequest);
+    if (isConceptualOrExplanation && !mentionsConversion) {
+      return {
+        valid: false,
+        reason: `unit_converter cannot be called for conceptual or explanatory questions. Answer directly using general knowledge.`,
+      };
+    }
+  }
+
+  if (toolName === "engineering_formula") {
+    const mentionsFormula = /\b(torque|power|speed|rpm|calculate|compute|formula|pump)\b/i.test(userRequest);
+    if (isConceptualOrExplanation && !mentionsFormula) {
+      return {
+        valid: false,
+        reason: `engineering_formula cannot be called for conceptual or explanatory questions. Answer directly using general knowledge.`,
+      };
+    }
+  }
+
+  if (toolName === "threshold_checker") {
+    if (isConceptualOrExplanation) {
+      return {
+        valid: false,
+        reason: `threshold_checker cannot be called for conceptual or explanatory questions. Answer directly using general knowledge.`,
+      };
+    }
+    const asksToRetrieveLimit = /\b(retrieve|search|find|lookup|look up|from the knowledge base|from knowledge base|from kb|from document|from manual)\b/i.test(userRequest);
+    if (steps.length === 0 && asksToRetrieveLimit) {
+      return {
+        valid: false,
+        reason: `For threshold checks requiring document knowledge, retrieve_information must be called first to retrieve the limit.`,
+      };
+    }
+  }
+
+  if (toolName === "statistics") {
+    if (isConceptualOrExplanation && !/\b(mean|average|median|sum|count|range|std|deviation|statistics)\b/i.test(userRequest)) {
+      return {
+        valid: false,
+        reason: `statistics cannot be called for conceptual or explanatory questions. Answer directly using general knowledge.`,
+      };
+    }
+    if (!Array.isArray(decision.input?.values) || decision.input.values.length === 0) {
+      return {
+        valid: false,
+        reason: `statistics requires a non-empty array of numerical values.`,
+      };
+    }
+  }
+
+  if (toolName === "date_time") {
+    if (isConceptualOrExplanation && !/\b(date|time|days|months|between|today|now|overdue|schedule)\b/i.test(userRequest)) {
+      return {
+        valid: false,
+        reason: `date_time cannot be called for conceptual or explanatory questions. Answer directly using general knowledge.`,
+      };
+    }
+  }
+
+  if (toolName === "document_extraction") {
+    if (isConceptualOrExplanation && !/\b(extract|fields|table|equipment id|serial|date)\b/i.test(userRequest)) {
+      return {
+        valid: false,
+        reason: `document_extraction cannot be called for conceptual or explanatory questions. Answer directly using general knowledge.`,
       };
     }
   }

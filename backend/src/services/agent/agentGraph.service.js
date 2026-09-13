@@ -73,6 +73,40 @@ export function normalizeActionFingerprint(toolName, input = {}) {
     const prompt = String(input?.prompt || "").trim().toLowerCase();
     return `${normTool}:::prompt=${prompt.slice(0, 100)}`;
   }
+  if (normTool === "unit_converter") {
+    const val = input?.value;
+    const from = String(input?.sourceUnit || "").trim().toLowerCase();
+    const to = String(input?.targetUnit || "").trim().toLowerCase();
+    return `${normTool}:::val=${val}:::from=${from}:::to=${to}`;
+  }
+  if (normTool === "engineering_formula") {
+    const f = String(input?.formula || "").trim().toLowerCase();
+    const p = JSON.stringify(input?.parameters || {});
+    return `${normTool}:::formula=${f}:::params=${p}`;
+  }
+  if (normTool === "threshold_checker") {
+    const val = input?.value;
+    const lim = JSON.stringify(input?.limit);
+    const comp = String(input?.comparison || "greater_than").trim().toLowerCase();
+    return `${normTool}:::val=${val}:::limit=${lim}:::comp=${comp}`;
+  }
+  if (normTool === "statistics") {
+    const vals = JSON.stringify(input?.values || []);
+    const ops = JSON.stringify(input?.operations || []);
+    return `${normTool}:::vals=${vals}:::ops=${ops}`;
+  }
+  if (normTool === "date_time") {
+    const op = String(input?.operation || "").trim().toLowerCase();
+    const d1 = String(input?.date1 || input?.date || "").trim();
+    const d2 = String(input?.date2 || input?.referenceDate || "").trim();
+    const amt = input?.amount;
+    return `${normTool}:::op=${op}:::d1=${d1}:::d2=${d2}:::amt=${amt}`;
+  }
+  if (normTool === "document_extraction") {
+    const textSnippet = String(input?.text || "").slice(0, 100).trim();
+    const fields = JSON.stringify(input?.fields || []);
+    return `${normTool}:::text=${textSnippet}:::fields=${fields}`;
+  }
   return `${normTool}:::${JSON.stringify(input || {})}`;
 }
 
@@ -500,6 +534,18 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         toolDetail = `/ Language: ${decision.input?.language || "python"}`;
       } else if (toolName === "text_transform") {
         toolDetail = `/ Operation: ${decision.input?.operation || ""}`;
+      } else if (toolName === "unit_converter") {
+        toolDetail = `/ Convert: ${decision.input?.value} ${decision.input?.sourceUnit} -> ${decision.input?.targetUnit}`;
+      } else if (toolName === "engineering_formula") {
+        toolDetail = `/ Formula: ${decision.input?.formula} (${JSON.stringify(decision.input?.parameters || {})})`;
+      } else if (toolName === "threshold_checker") {
+        toolDetail = `/ Value: ${decision.input?.value} vs Limit: ${JSON.stringify(decision.input?.limit)} (${decision.input?.comparison || "greater_than"})`;
+      } else if (toolName === "statistics") {
+        toolDetail = `/ Values: [${(decision.input?.values || []).slice(0, 5).join(", ")}${(decision.input?.values || []).length > 5 ? "..." : ""}]`;
+      } else if (toolName === "date_time") {
+        toolDetail = `/ Op: ${decision.input?.operation}`;
+      } else if (toolName === "document_extraction") {
+        toolDetail = `/ Fields: ${JSON.stringify(decision.input?.fields || ["all"])}`;
       } else {
         toolDetail = `/ Input: ${JSON.stringify(decision.input || {})}`;
       }
@@ -518,6 +564,18 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           console.log(`Language: ${decision.input.language || "python"}`);
         } else if (toolName === "vision") {
           console.log(`Instruction: ${decision.input.prompt || "Visual inspection"}`);
+        } else if (toolName === "unit_converter") {
+          console.log(`Convert: ${decision.input.value} ${decision.input.sourceUnit} -> ${decision.input.targetUnit}`);
+        } else if (toolName === "engineering_formula") {
+          console.log(`Formula: ${decision.input.formula}`);
+        } else if (toolName === "threshold_checker") {
+          console.log(`Check: ${decision.input.value} vs ${JSON.stringify(decision.input.limit)}`);
+        } else if (toolName === "statistics") {
+          console.log(`Statistics on ${(decision.input.values || []).length} values`);
+        } else if (toolName === "date_time") {
+          console.log(`Operation: ${decision.input.operation}`);
+        } else if (toolName === "document_extraction") {
+          console.log(`Extracting fields from document text`);
         } else {
           console.log(`Input: ${JSON.stringify(decision.input)}`);
         }
@@ -536,6 +594,18 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           ? "🔒 Executing in isolated container sandbox..."
           : toolName === "vision"
           ? "👁️ Inspecting visual content with Qwen2.5-VL..."
+          : toolName === "unit_converter"
+          ? "🔧 Converting engineering units..."
+          : toolName === "engineering_formula"
+          ? "⚙️ Evaluating engineering formula..."
+          : toolName === "threshold_checker"
+          ? "📊 Checking threshold limits..."
+          : toolName === "statistics"
+          ? "📈 Computing statistics..."
+          : toolName === "date_time"
+          ? "📅 Performing date/time calculation..."
+          : toolName === "document_extraction"
+          ? "📑 Extracting structured fields from document..."
           : `🔧 Using ${toolName}...`;
 
       emit({
@@ -619,6 +689,18 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           } else if (toolName === "execute_code") {
             const statusDesc = parsedResult?.timedOut ? "TIMED OUT" : `exit: ${parsedResult?.exitCode ?? (parsedResult?.success ? 0 : 1)}`;
             console.log(`Sandbox output (${statusDesc})`);
+          } else if (toolName === "unit_converter") {
+            console.log(parsedResult?.formatted || `${parsedResult?.inputValue} ${parsedResult?.sourceUnit} = ${parsedResult?.convertedValue} ${parsedResult?.targetUnit}`);
+          } else if (toolName === "engineering_formula") {
+            console.log(parsedResult?.formatted || `${parsedResult?.formulaName}: ${parsedResult?.calculatedResult} ${parsedResult?.unit}`);
+          } else if (toolName === "threshold_checker") {
+            console.log(parsedResult?.formatted || `${parsedResult?.status}: diff ${parsedResult?.difference}, ${parsedResult?.percentageDifference}%`);
+          } else if (toolName === "statistics") {
+            console.log(parsedResult?.formatted || JSON.stringify(parsedResult?.results));
+          } else if (toolName === "date_time") {
+            console.log(parsedResult?.formatted || parsedResult?.resultDate || parsedResult?.daysDifference || JSON.stringify(parsedResult));
+          } else if (toolName === "document_extraction") {
+            console.log(parsedResult?.formatted || `Extracted ${parsedResult?.totalFieldsExtracted || 0} fields`);
           } else {
             console.log(typeof parsedResult === "object" ? JSON.stringify(parsedResult) : String(parsedResult));
           }
@@ -634,6 +716,18 @@ Return ONLY a valid JSON object matching the Response Schema.`;
               ? "✓ Code generated by Qwen2.5-Coder"
               : toolName === "execute_code"
               ? "✓ Code executed in isolated sandbox"
+              : toolName === "unit_converter"
+              ? "✓ Unit converted"
+              : toolName === "engineering_formula"
+              ? "✓ Engineering formula evaluated"
+              : toolName === "threshold_checker"
+              ? "✓ Limit checked"
+              : toolName === "statistics"
+              ? "✓ Statistics computed"
+              : toolName === "date_time"
+              ? "✓ Date/time operation completed"
+              : toolName === "document_extraction"
+              ? "✓ Fields extracted from document"
               : "✓ Tool completed"
             : `✗ Tool "${toolName}" failed`;
 
