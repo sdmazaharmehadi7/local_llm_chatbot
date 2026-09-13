@@ -17,6 +17,8 @@ import {
   AGENT_STATUS,
   AGENT_ACTION_TYPES,
   AGENT_LIMITS,
+  WORKFLOW_TYPES,
+  WORKFLOW_STATUS,
 } from "./agent.types.js";
 import { createAgentTools } from "./agentTools.js";
 import { sendChatToOllama } from "../ollama.service.js";
@@ -109,6 +111,35 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => [],
   }),
   remainingInformation: Annotation({ reducer: (_, y) => (Array.isArray(y) ? y : []), default: () => [] }),
+  workflow: Annotation({
+    reducer: (x, y) => {
+      if (y === null) return null;
+      if (!y) return x;
+      const prev = x || {
+        type: WORKFLOW_TYPES.GENERAL,
+        status: WORKFLOW_STATUS.PENDING,
+        currentStep: "",
+        completedSteps: [],
+        retryCount: 0,
+      };
+      return {
+        type: y.type ?? prev.type ?? WORKFLOW_TYPES.GENERAL,
+        status: y.status ?? prev.status ?? WORKFLOW_STATUS.PENDING,
+        currentStep: y.currentStep !== undefined ? y.currentStep : (prev.currentStep ?? ""),
+        completedSteps: Array.isArray(y.completedSteps)
+          ? (y.replaceSteps ? y.completedSteps : [...(prev.completedSteps || []), ...y.completedSteps])
+          : (prev.completedSteps || []),
+        retryCount: typeof y.retryCount === "number" ? y.retryCount : (prev.retryCount ?? 0),
+      };
+    },
+    default: () => ({
+      type: WORKFLOW_TYPES.GENERAL,
+      status: WORKFLOW_STATUS.PENDING,
+      currentStep: "",
+      completedSteps: [],
+      retryCount: 0,
+    }),
+  }),
 });
 
 class AgentGraphService {
@@ -409,12 +440,30 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         };
       }
 
+      const effectiveWorkflow =
+        decision.workflow || state.workflow?.type || WORKFLOW_TYPES.GENERAL;
+
+      if (state.steps.length === 0) {
+        console.log(`\n[Agent]`);
+        console.log(`Task: ${state.userRequest}`);
+        console.log(`\n[Workflow]`);
+        console.log(`Selected: ${effectiveWorkflow}`);
+        emit({
+          status: "planning",
+          workflow: effectiveWorkflow,
+          message: "Analysing your question...",
+          reason: `Workflow selected: ${effectiveWorkflow}`,
+        });
+      }
+
       if (decision.action === AGENT_ACTION_TYPES.FINAL) {
         const finalStepNum = (state.steps.length * 2) + 1;
         console.log(`\n[Agent Step ${finalStepNum}] Model: Qwen3 / Decision: final answer`);
         console.log(`User task preserved: yes`);
         console.log(`Final answer`);
         console.log(decision.answer || decision.response || "Task completed.");
+        console.log(`\n[Workflow]`);
+        console.log(`Completed: ${effectiveWorkflow}`);
         emit({
           status: "preparing_answer",
           message: "Generating response...",
@@ -424,15 +473,35 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           status: AGENT_STATUS.COMPLETED,
           finalResponse: decision.answer || decision.response || "Task completed.",
           currentAction: decision,
+          workflow: {
+            type: effectiveWorkflow,
+            status: WORKFLOW_STATUS.COMPLETED,
+            currentStep: "final",
+          },
         };
       }
 
+      const isRepairDecision =
+        state.steps.length > 0 &&
+        (state.steps[state.steps.length - 1].toolName || state.steps[state.steps.length - 1].tool) === "execute_code" &&
+        state.steps[state.steps.length - 1].status === "failed" &&
+        (decision.tool || decision.toolName) === "coding";
+
+      const decisionName = isRepairDecision
+        ? "repair"
+        : (decision.tool || decision.toolName);
+
       const reasonerStepNum = (state.steps.length * 2) + 1;
-      console.log(`\n[Agent Step ${reasonerStepNum}] Model: Qwen3 / Decision: ${decision.tool || decision.toolName}${decision.reason ? ` / Reason: ${decision.reason}` : ""}`);
+      console.log(`\n[Agent Step ${reasonerStepNum}] Model: Qwen3 / Decision: ${decisionName}${decision.reason ? ` / Reason: ${decision.reason}` : ""}`);
 
       return {
         status: AGENT_STATUS.EXECUTING,
         currentAction: decision,
+        workflow: {
+          type: effectiveWorkflow,
+          status: WORKFLOW_STATUS.RUNNING,
+          currentStep: decision.tool || decision.toolName,
+        },
       };
     };
 
@@ -556,6 +625,20 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         images: state.images || [],
       });
 
+      if (toolName === "retrieve_information") {
+        console.log(`\n[Tool]`);
+        console.log(`Retrieval started`);
+      } else if (toolName === "calculator") {
+        console.log(`\n[Tool]`);
+        console.log(`Calculator expression: ${decision.input?.expression || ""}`);
+      } else if (toolName === "vision") {
+        console.log(`\n[Vision]`);
+        console.log(`Instruction: ${decision.input?.prompt || ""}`);
+      } else if (toolName === "execute_code") {
+        console.log(`\n[Sandbox]`);
+        console.log(`Execution started`);
+      }
+
       const matchedTool = tools.find((t) => t.name === toolName);
       const startTime = Date.now();
       let stepRecord;
@@ -598,6 +681,8 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           if (toolName === "calculator") {
             const val = parsedResult?.value !== undefined ? parsedResult.value : (parsedResult?.formatted || parsedResult);
             console.log(val);
+            console.log(`\n[Tool]`);
+            console.log(`Calculator result: ${val}`);
           } else if (toolName === "retrieve_information") {
             if (parsedResult?.content) {
               const firstLine = parsedResult.content.split("\n").filter(Boolean)[0] || parsedResult.content;
@@ -614,11 +699,21 @@ Return ONLY a valid JSON object matching the Response Schema.`;
                 : 0;
               console.log(`Retrieved ${count} excerpts`);
             }
+            console.log(`\n[Tool]`);
+            console.log(`Retrieval completed`);
           } else if (toolName === "coding") {
+            const isRepair =
+              state.steps.length > 0 &&
+              (state.steps[state.steps.length - 1].toolName || state.steps[state.steps.length - 1].tool) === "execute_code" &&
+              state.steps[state.steps.length - 1].status === "failed";
             console.log(`Generated code (${parsedResult?.language || "code"})`);
+            console.log(`\n[Coding]`);
+            console.log(isRepair ? "Code revised" : "Code generated");
           } else if (toolName === "execute_code") {
             const statusDesc = parsedResult?.timedOut ? "TIMED OUT" : `exit: ${parsedResult?.exitCode ?? (parsedResult?.success ? 0 : 1)}`;
             console.log(`Sandbox output (${statusDesc})`);
+            console.log(`\n[Sandbox]`);
+            console.log(`Execution ${isSuccess ? "succeeded" : "failed"}`);
           } else {
             console.log(typeof parsedResult === "object" ? JSON.stringify(parsedResult) : String(parsedResult));
           }
@@ -672,6 +767,10 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         } catch (execErr) {
           console.log(`[Tool Result]`);
           console.log(`Error: ${execErr.message}`);
+          if (toolName === "execute_code") {
+            console.log(`\n[Sandbox]`);
+            console.log(`Execution failed`);
+          }
           emit({
             status: "tool_complete",
             tool: toolName,
@@ -724,10 +823,17 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         console.log(`Retrieved facts/evidence count: ${currentRetrievalCount}`);
       }
 
+      const isExecCodeFail = toolName === "execute_code" && stepRecord.status === "failed";
+      const retryInc = isExecCodeFail ? 1 : 0;
+
       const nextState = {
         steps: [stepRecord],
         toolExecutionCount: state.toolExecutionCount + 1,
         status: AGENT_STATUS.PLANNING,
+        workflow: {
+          completedSteps: [toolName],
+          retryCount: (state.workflow?.retryCount || 0) + retryInc,
+        },
       };
       if (newFacts.length > 0) {
         nextState.retrievedFacts = newFacts;

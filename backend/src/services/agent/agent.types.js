@@ -19,16 +19,36 @@ export const AGENT_ACTION_TYPES = Object.freeze({
   ERROR: "error",
 });
 
+export const WORKFLOW_TYPES = Object.freeze({
+  KNOWLEDGE_RETRIEVAL: "knowledge_retrieval",
+  RETRIEVAL_CALCULATION: "retrieval_calculation",
+  VISION_CALCULATION: "vision_calculation",
+  VISION_KNOWLEDGE: "vision_knowledge",
+  CODING_SANDBOX: "coding_sandbox",
+  GENERAL: "general",
+});
+
+export const WORKFLOW_STATUS = Object.freeze({
+  PENDING: "pending",
+  RUNNING: "running",
+  COMPLETED: "completed",
+  FAILED: "failed",
+});
+
 export const AGENT_LIMITS = Object.freeze({
   MAX_AGENT_STEPS: 8,
   MAX_TOOL_EXECUTIONS: 5,
   MAX_EXECUTION_TIME_MS: 60_000,
   MAX_CONSECUTIVE_IDENTICAL_ACTIONS: 3,
   MAX_RESULT_SIZE: 100_000,
+  MAX_CODING_REPAIRS: 2,
 });
 
 export default {
   AGENT_STATUS,
   AGENT_ACTION_TYPES,
   AGENT_LIMITS,
+  WORKFLOW_TYPES,
+  WORKFLOW_STATUS,
 };
+

@@ -10,7 +10,7 @@
 
 import crypto from "crypto";
 import { agentGraphService } from "./agentGraph.service.js";
-import { AGENT_STATUS } from "./agent.types.js";
+import { AGENT_STATUS, WORKFLOW_TYPES, WORKFLOW_STATUS } from "./agent.types.js";
 import Message from "../../models/Message.js";
 import Chat from "../../models/Chat.js";
 import { streamChatFromOllama } from "../ollama.service.js";
@@ -140,6 +140,14 @@ export async function runAgentTask({
         currentAction: null,
         finalResponse: "",
         error: null,
+        workflow: {
+          type: WORKFLOW_TYPES.GENERAL,
+          status: WORKFLOW_STATUS.PENDING,
+          currentStep: "",
+          completedSteps: [],
+          retryCount: 0,
+          replaceSteps: true,
+        },
       },
       { configurable: { thread_id: threadId } }
     );
@@ -335,6 +343,10 @@ User Question: "${message}"`;
     })),
     remaining_information: finalGraphState.remainingInformation || [],
     iteration_count: (finalGraphState.steps || []).length,
+    workflow: finalGraphState.workflow || {
+      type: WORKFLOW_TYPES.GENERAL,
+      status: isSuccess ? WORKFLOW_STATUS.COMPLETED : WORKFLOW_STATUS.FAILED,
+    },
   };
 
   return {
@@ -344,6 +356,10 @@ User Question: "${message}"`;
     userId: effectiveUserId,
     chatId: chatId || null,
     status: isSuccess ? "completed" : "failed",
+    workflow: finalGraphState.workflow || {
+      type: WORKFLOW_TYPES.GENERAL,
+      status: isSuccess ? WORKFLOW_STATUS.COMPLETED : WORKFLOW_STATUS.FAILED,
+    },
     response: finalAnswer,
     steps: finalGraphState.steps || [],
     sources: extractedSources,
