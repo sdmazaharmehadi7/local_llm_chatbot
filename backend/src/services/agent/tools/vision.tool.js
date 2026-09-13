@@ -13,6 +13,7 @@
  */
 
 import { sendChatToOllama } from "../../ollama.service.js";
+import { modelLock } from "../modelLock.service.js";
 
 export const VISION_MODEL = "qwen2.5vl:7b";
 
@@ -231,21 +232,25 @@ export const visionTool = {
       const visionClientFn =
         typeof context.visionClient === "function" ? context.visionClient : null;
 
-      if (visionClientFn) {
-        analysisText = await visionClientFn(messages, { image: cleanImagePayload });
-      } else {
-        analysisText = await sendChatToOllama(
-          messages,
-          VISION_MODEL,
-          {
-            options: {
-              temperature: 0.2,
-              num_predict: 2048,
-            },
-            timeoutMs: 120_000,
-          }
-        );
-      }
+      const lifecycleHandler = typeof context.onProgress === "function" ? context.onProgress : null;
+
+      await modelLock.withLock("Vision Agent", VISION_MODEL, async () => {
+        if (visionClientFn) {
+          analysisText = await visionClientFn(messages, { image: cleanImagePayload });
+        } else {
+          analysisText = await sendChatToOllama(
+            messages,
+            VISION_MODEL,
+            {
+              options: {
+                temperature: 0.2,
+                num_predict: 2048,
+              },
+              timeoutMs: 120_000,
+            }
+          );
+        }
+      }, lifecycleHandler);
 
       const cleanAnalysis = typeof analysisText === "string" ? analysisText.trim() : "";
 

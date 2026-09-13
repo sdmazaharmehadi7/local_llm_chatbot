@@ -14,6 +14,7 @@ import { AGENT_STATUS, WORKFLOW_TYPES, WORKFLOW_STATUS } from "./agent.types.js"
 import Message from "../../models/Message.js";
 import Chat from "../../models/Chat.js";
 import { streamChatFromOllama } from "../ollama.service.js";
+import { modelLock } from "./modelLock.service.js";
 
 /**
  * Execute an Agent task end-to-end using the LangGraph engine.
@@ -153,6 +154,8 @@ export async function runAgentTask({
     );
   } catch (graphErr) {
     console.error(`[agent.service] Error during LangGraph execution:`, graphErr);
+    const modelMetrics = modelLock.getPerformanceMetrics();
+    const totalExecutionTimeMs = Date.now() - startTime;
     return {
       success: false,
       taskId,
@@ -163,7 +166,17 @@ export async function runAgentTask({
       response: "",
       steps: [],
       events: progressEvents,
-      executionTimeMs: Date.now() - startTime,
+      executionTimeMs: totalExecutionTimeMs,
+      metrics: {
+        modelWaitTimeMs: modelMetrics.totalWaitTimeMs || 0,
+        modelLoadTimeMs: modelMetrics.totalLoadTimeMs || 0,
+        inferenceTimeMs: modelMetrics.totalInferenceTimeMs || 0,
+        releaseTimeMs: modelMetrics.totalReleaseTimeMs || 0,
+        toolExecutionTimeMs: 0,
+        totalExecutionTimeMs,
+        modelInvocations: modelMetrics.totalInvocations || 0,
+        peakModelConcurrency: modelLock.getPeakConcurrency(),
+      },
       error: graphErr.message,
     };
   }
@@ -256,53 +269,55 @@ Provide the complete final answer.`;
 User Question: "${message}"`;
         }
 
-        const { stream: ollamaStream } = await streamChatFromOllama(
-          [{ role: "user", content: streamPrompt }],
-          options.signal || null,
-          "qwen3:8b",
-          { think: false }
-        );
+        await modelLock.withLock("Supervisor", "qwen3:8b", async () => {
+          const { stream: ollamaStream } = await streamChatFromOllama(
+            [{ role: "user", content: streamPrompt }],
+            options.signal || null,
+            "qwen3:8b",
+            { think: false }
+          );
 
-        const reader = ollamaStream.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let streamedAnswer = "";
+          const reader = ollamaStream.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let streamedAnswer = "";
 
-        while (true) {
-          if (options.signal && options.signal.aborted) {
-            reader.cancel().catch(() => {});
-            break;
-          }
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            let chunk;
-            try {
-              chunk = JSON.parse(trimmed);
-            } catch {
-              continue;
+          while (true) {
+            if (options.signal && options.signal.aborted) {
+              reader.cancel().catch(() => {});
+              break;
             }
-            if (chunk?.message?.thinking) continue;
-            const token = chunk?.message?.content || "";
-            if (token) {
-              const cleanToken = token.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, "");
-              if (cleanToken) {
-                streamedAnswer += cleanToken;
-                options.onChunk({ text: cleanToken });
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              let chunk;
+              try {
+                chunk = JSON.parse(trimmed);
+              } catch {
+                continue;
+              }
+              if (chunk?.message?.thinking) continue;
+              const token = chunk?.message?.content || "";
+              if (token) {
+                const cleanToken = token.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, "");
+                if (cleanToken) {
+                  streamedAnswer += cleanToken;
+                  options.onChunk({ text: cleanToken });
+                }
               }
             }
           }
-        }
-        if (streamedAnswer.trim()) {
-          finalAnswer = streamedAnswer;
-        }
+          if (streamedAnswer.trim()) {
+            finalAnswer = streamedAnswer;
+          }
+        }, emitProgress);
       } catch (streamErr) {
         console.warn("[agent.service] Streaming final answer from Ollama failed, falling back to buffered answer:", streamErr.message);
         options.onChunk({ text: finalAnswer });
@@ -326,6 +341,22 @@ User Question: "${message}"`;
   const totalExecutionTimeMs = Date.now() - startTime;
   console.log(`[agent] LangGraph task finished: ${taskId} (${isSuccess ? "COMPLETED" : "FAILED"})`);
 
+  const modelMetrics = modelLock.getPerformanceMetrics();
+  const toolExecTimeMs = (finalGraphState.steps || []).reduce(
+    (acc, s) => acc + (s.executionTimeMs || 0),
+    0
+  );
+  const performanceMetrics = {
+    modelWaitTimeMs: modelMetrics.totalWaitTimeMs || 0,
+    modelLoadTimeMs: modelMetrics.totalLoadTimeMs || 0,
+    inferenceTimeMs: modelMetrics.totalInferenceTimeMs || 0,
+    releaseTimeMs: modelMetrics.totalReleaseTimeMs || 0,
+    toolExecutionTimeMs: toolExecTimeMs,
+    totalExecutionTimeMs,
+    modelInvocations: modelMetrics.totalInvocations || 0,
+    peakModelConcurrency: modelLock.getPeakConcurrency(),
+  };
+
   const structuredState = {
     taskId,
     threadId,
@@ -335,7 +366,21 @@ User Question: "${message}"`;
     messages: conversationHistory,
     tool_results: (finalGraphState.steps || []).map((s) => s.observation),
     retrieved_facts: finalGraphState.retrievedFacts || [],
+    specialist_results: (finalGraphState.steps || []).map((s) => ({
+      agent: s.agent || (s.toolName === "retrieve_information" ? "Research Agent" : s.toolName === "vision" ? "Vision Agent" : s.toolName === "coding" || s.toolName === "execute_code" ? "Coding Agent" : s.toolName),
+      action: s.toolName || s.tool,
+      output: s.observation,
+      status: s.status,
+    })),
+    agents_invoked: [...new Set((finalGraphState.steps || []).map((s) => {
+      if (s.agent) return s.agent;
+      if (s.toolName === "retrieve_information") return "Research Agent";
+      if (s.toolName === "vision") return "Vision Agent";
+      if (s.toolName === "coding" || s.toolName === "execute_code") return "Coding Agent";
+      return s.toolName;
+    }))],
     completed_steps: (finalGraphState.steps || []).map((s) => ({
+      agent: s.agent || (s.toolName === "retrieve_information" ? "Research Agent" : s.toolName === "vision" ? "Vision Agent" : s.toolName === "coding" || s.toolName === "execute_code" ? "Coding Agent" : s.toolName),
       tool: s.toolName || s.tool,
       input: s.input,
       observation: s.observation,
@@ -347,6 +392,7 @@ User Question: "${message}"`;
       type: WORKFLOW_TYPES.GENERAL,
       status: isSuccess ? WORKFLOW_STATUS.COMPLETED : WORKFLOW_STATUS.FAILED,
     },
+    metrics: performanceMetrics,
   };
 
   return {
@@ -366,6 +412,7 @@ User Question: "${message}"`;
     ragSources: extractedSources,
     events: progressEvents,
     executionTimeMs: totalExecutionTimeMs,
+    metrics: performanceMetrics,
     state: structuredState,
     ...(finalGraphState.error ? { error: finalGraphState.error } : {}),
   };

@@ -22,6 +22,7 @@ import {
 } from "./agent.types.js";
 import { createAgentTools } from "./agentTools.js";
 import { sendChatToOllama } from "../ollama.service.js";
+import { modelLock } from "./modelLock.service.js";
 import {
   parseBrainOutput,
   validateToolSelectionPolicy,
@@ -190,23 +191,25 @@ class AgentGraphService {
   }
 
   /**
-   * Calls the local Ollama service (or test mock)
+   * Calls the local Ollama service (or test mock) under the Supervisor model lock
    */
-  async _callBrainLlm(messages) {
-    if (typeof this.brainLlmClient === "function") {
-      return this.brainLlmClient(messages);
-    }
+  async _callBrainLlm(messages, onLifecycle = null) {
+    return modelLock.withLock("Supervisor", "qwen3:8b", async () => {
+      if (typeof this.brainLlmClient === "function") {
+        return this.brainLlmClient(messages);
+      }
 
-    return sendChatToOllama(messages, "qwen3:8b", {
-      format: "json",
-      think: false,
-      options: {
-        temperature: 0.1,
-        num_predict: 2048,
+      return sendChatToOllama(messages, "qwen3:8b", {
+        format: "json",
         think: false,
-      },
-      timeoutMs: 120_000,
-    });
+        options: {
+          temperature: 0.1,
+          num_predict: 2048,
+          think: false,
+        },
+        timeoutMs: 120_000,
+      });
+    }, onLifecycle);
   }
 
   /**
@@ -341,7 +344,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
 
       let rawOutput;
       try {
-        rawOutput = await this._callBrainLlm(messages);
+        rawOutput = await this._callBrainLlm(messages, emit);
       } catch (llmErr) {
         const errMsg = `Brain inference error: ${llmErr.message}`;
         emit({ status: "error", error: errMsg });
@@ -365,7 +368,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
               content: `Your previous response was not valid JSON (${parsed.error}). Please output ONLY the raw valid JSON object.`,
             },
           ];
-          const retryOutput = await this._callBrainLlm(retryMessages);
+          const retryOutput = await this._callBrainLlm(retryMessages, emit);
           parsed = parseBrainOutput(retryOutput);
         } catch {
           // retry failed, use original error
@@ -402,7 +405,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
               content: `Policy Guidance: ${policyValidation.reason} Please output a corrected JSON action.`,
             },
           ];
-          const retryOutput = await this._callBrainLlm(retryMessages);
+          const retryOutput = await this._callBrainLlm(retryMessages, emit);
           const retryParsed = parseBrainOutput(retryOutput);
           if (retryParsed.valid) {
             const retryValidation = validateToolSelectionPolicy(retryParsed.decision, {
@@ -443,30 +446,55 @@ Return ONLY a valid JSON object matching the Response Schema.`;
       const effectiveWorkflow =
         decision.workflow || state.workflow?.type || WORKFLOW_TYPES.GENERAL;
 
+      const agentMap = {
+        retrieve_information: "Research Agent",
+        vision: "Vision Agent",
+        coding: "Coding Agent",
+        execute_code: "Coding Agent",
+        calculator: "Calculator",
+        text_transform: "Text Transform",
+      };
+
+      const nowIso = new Date().toISOString();
+
       if (state.steps.length === 0) {
-        console.log(`\n[Agent]`);
-        console.log(`Task: ${state.userRequest}`);
-        console.log(`\n[Workflow]`);
-        console.log(`Selected: ${effectiveWorkflow}`);
+        console.log(`\n[${nowIso}] [Supervisor] Analyzing task`);
+        console.log(`[${nowIso}] [Agent] Task: ${state.userRequest}`);
+        console.log(`[${nowIso}] [Workflow] Selected: ${effectiveWorkflow}`);
         emit({
-          status: "planning",
+          status: "supervisor_started",
+          phase: "Supervisor started",
+          supervisor: "Supervisor",
           workflow: effectiveWorkflow,
-          message: "Analysing your question...",
+          message: "Supervisor started: Analyzing task...",
           reason: `Workflow selected: ${effectiveWorkflow}`,
+        });
+      } else {
+        console.log(`\n[${nowIso}] [Supervisor] Reviewing result`);
+        emit({
+          status: "supervisor_reviewing",
+          phase: "Supervisor reviewing",
+          supervisor: "Supervisor",
+          workflow: effectiveWorkflow,
+          message: "Supervisor reviewing: Evaluating specialist findings...",
+          reason: "Evaluating specialist findings...",
         });
       }
 
       if (decision.action === AGENT_ACTION_TYPES.FINAL) {
+        const finalIso = new Date().toISOString();
+        console.log(`\n[${finalIso}] [Supervisor] Preparing final answer`);
         const finalStepNum = (state.steps.length * 2) + 1;
-        console.log(`\n[Agent Step ${finalStepNum}] Model: Qwen3 / Decision: final answer`);
+        console.log(`\n[${finalIso}] [Agent Step ${finalStepNum}] Model: Qwen3 / Decision: final answer`);
         console.log(`User task preserved: yes`);
         console.log(`Final answer`);
         console.log(decision.answer || decision.response || "Task completed.");
-        console.log(`\n[Workflow]`);
-        console.log(`Completed: ${effectiveWorkflow}`);
+        console.log(`\n[${finalIso}] [Workflow] Completed: ${effectiveWorkflow}`);
         emit({
-          status: "preparing_answer",
-          message: "Generating response...",
+          status: "final_response",
+          phase: "Final response",
+          supervisor: "Supervisor",
+          message: "Final response: Generating synthesized answer...",
           reason: decision.reason || "Synthesizing final answer...",
         });
         return {
@@ -491,8 +519,24 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         ? "repair"
         : (decision.tool || decision.toolName);
 
+      const targetAgent = agentMap[decision.tool || decision.toolName] || (decision.tool || decision.toolName);
+      const isNextAgent = state.steps.length > 0;
+      const delegatingIso = new Date().toISOString();
+
+      console.log(`\n[${delegatingIso}] [Supervisor] ${isNextAgent ? "Next agent:" : "Delegating to"} ${targetAgent}`);
+      emit({
+        status: isNextAgent ? "next_agent" : "agent_selected",
+        phase: isNextAgent ? "Next agent" : "Agent selected",
+        supervisor: "Supervisor",
+        agent: targetAgent,
+        selectedAgent: targetAgent,
+        delegate: targetAgent,
+        tool: decision.tool || decision.toolName,
+        message: isNextAgent ? `Next agent: ${targetAgent}...` : `Agent selected: ${targetAgent}...`,
+      });
+
       const reasonerStepNum = (state.steps.length * 2) + 1;
-      console.log(`\n[Agent Step ${reasonerStepNum}] Model: Qwen3 / Decision: ${decisionName}${decision.reason ? ` / Reason: ${decision.reason}` : ""}`);
+      console.log(`\n[${delegatingIso}] [Agent Step ${reasonerStepNum}] Model: Qwen3 / Decision: ${decisionName}${decision.reason ? ` / Reason: ${decision.reason}` : ""}`);
 
       return {
         status: AGENT_STATUS.EXECUTING,
@@ -607,8 +651,30 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           ? "👁️ Inspecting visual content with Qwen2.5-VL..."
           : `🔧 Using ${toolName}...`;
 
+      const agentMap = {
+        retrieve_information: "Research Agent",
+        vision: "Vision Agent",
+        coding: "Coding Agent",
+        execute_code: "Coding Agent",
+        calculator: "Calculator",
+        text_transform: "Text Transform",
+      };
+      const specialistName = agentMap[toolName] || toolName;
+      const isoExecuting = new Date().toISOString();
+
+      console.log(`\n[${isoExecuting}] [${specialistName}] Executing`);
+      emit({
+        status: "agent_executing",
+        phase: "Agent executing",
+        agent: specialistName,
+        tool: toolName,
+        message: `[${specialistName}] Executing...`,
+        reason: decision.reason || toolActionMsg,
+      });
+
       emit({
         status: "tool",
+        agent: specialistName,
         tool: toolName,
         message: toolActionMsg,
         reason: decision.reason || toolActionMsg,
@@ -623,20 +689,17 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         sandboxRunner,
         visionClient: effectiveVisionClient,
         images: state.images || [],
+        onProgress: emit,
       });
 
       if (toolName === "retrieve_information") {
-        console.log(`\n[Tool]`);
-        console.log(`Retrieval started`);
+        console.log(`\n[${isoExecuting}] [Tool] Retrieval started`);
       } else if (toolName === "calculator") {
-        console.log(`\n[Tool]`);
-        console.log(`Calculator expression: ${decision.input?.expression || ""}`);
+        console.log(`\n[${isoExecuting}] [Tool] Calculator expression: ${decision.input?.expression || ""}`);
       } else if (toolName === "vision") {
-        console.log(`\n[Vision]`);
-        console.log(`Instruction: ${decision.input?.prompt || ""}`);
+        console.log(`\n[${isoExecuting}] [Vision] Instruction: ${decision.input?.prompt || ""}`);
       } else if (toolName === "execute_code") {
-        console.log(`\n[Sandbox]`);
-        console.log(`Execution started`);
+        console.log(`\n[${isoExecuting}] [Sandbox] Execution started`);
       }
 
       const matchedTool = tools.find((t) => t.name === toolName);
@@ -732,8 +795,29 @@ Return ONLY a valid JSON object matching the Response Schema.`;
               : "✓ Tool completed"
             : `✗ Tool "${toolName}" failed`;
 
+          const isoCompleted = new Date().toISOString();
+          console.log(`\n[${isoCompleted}] [${specialistName}] Completed`);
+
+          emit({
+            status: "agent_completed",
+            phase: "Agent completed",
+            agent: specialistName,
+            tool: toolName,
+            success: isSuccess,
+            message: `Agent completed: ${specialistName}`,
+          });
+
+          emit({
+            status: "agent_complete",
+            agent: specialistName,
+            tool: toolName,
+            success: isSuccess,
+            message: `[${specialistName}] Completed`,
+          });
+
           emit({
             status: "tool_complete",
+            agent: specialistName,
             tool: toolName,
             success: isSuccess,
             message: toolDoneMsg,
@@ -741,6 +825,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
 
           emit({
             status: "analyzing",
+            agent: specialistName,
             tool: toolName,
             message: "Analysing result...",
             reason: `Evaluating output from ${toolName}...`,
@@ -755,6 +840,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           stepRecord = {
             type: "tool",
             action: "tool",
+            agent: specialistName,
             tool: toolName,
             toolName,
             reason: decision.reason,
@@ -765,14 +851,31 @@ Return ONLY a valid JSON object matching the Response Schema.`;
             executionTimeMs: Date.now() - startTime,
           };
         } catch (execErr) {
+          const isoFail = new Date().toISOString();
           console.log(`[Tool Result]`);
           console.log(`Error: ${execErr.message}`);
           if (toolName === "execute_code") {
-            console.log(`\n[Sandbox]`);
-            console.log(`Execution failed`);
+            console.log(`\n[${isoFail}] [Sandbox] Execution failed`);
           }
+          console.log(`\n[${isoFail}] [${specialistName}] Completed`);
+          emit({
+            status: "agent_completed",
+            phase: "Agent completed",
+            agent: specialistName,
+            tool: toolName,
+            success: false,
+            message: `Agent completed (failed): ${specialistName}`,
+          });
+          emit({
+            status: "agent_complete",
+            agent: specialistName,
+            tool: toolName,
+            success: false,
+            message: `[${specialistName}] Completed`,
+          });
           emit({
             status: "tool_complete",
+            agent: specialistName,
             tool: toolName,
             success: false,
             message: `✗ Tool "${toolName}" error: ${execErr.message}`,
@@ -780,6 +883,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           stepRecord = {
             type: "tool",
             action: "tool",
+            agent: specialistName,
             tool: toolName,
             toolName,
             reason: decision.reason,

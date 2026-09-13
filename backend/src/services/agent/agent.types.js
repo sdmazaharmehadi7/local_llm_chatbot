@@ -15,9 +15,24 @@ export const AGENT_STATUS = Object.freeze({
 
 export const AGENT_ACTION_TYPES = Object.freeze({
   TOOL: "tool",
+  DELEGATE: "delegate",
   FINAL: "final",
   ERROR: "error",
 });
+
+export const AGENT_ROLES = Object.freeze({
+  SUPERVISOR: "supervisor",
+  RESEARCH_AGENT: "research_agent",
+  VISION_AGENT: "vision_agent",
+  CODING_AGENT: "coding_agent",
+});
+
+export const SPECIALIST_MODELS = Object.freeze({
+  SUPERVISOR: "qwen3:8b",
+  VISION_AGENT: "qwen2.5vl:7b",
+  CODING_AGENT: "qwen2.5-coder:7b",
+});
+
 
 export const WORKFLOW_TYPES = Object.freeze({
   KNOWLEDGE_RETRIEVAL: "knowledge_retrieval",
@@ -50,5 +65,7 @@ export default {
   AGENT_LIMITS,
   WORKFLOW_TYPES,
   WORKFLOW_STATUS,
+  AGENT_ROLES,
+  SPECIALIST_MODELS,
 };
 

@@ -13,6 +13,7 @@
  */
 
 import { sendChatToOllama } from "../../ollama.service.js";
+import { modelLock } from "../modelLock.service.js";
 
 export const CODING_MODEL = "qwen2.5-coder:7b";
 
@@ -96,21 +97,25 @@ export const codingTool = {
       const coderClientFn =
         typeof context.coderClient === "function" ? context.coderClient : null;
 
-      if (coderClientFn) {
-        generatedCodeText = await coderClientFn(messages);
-      } else {
-        generatedCodeText = await sendChatToOllama(
-          messages,
-          CODING_MODEL,
-          {
-            options: {
-              temperature: 0.2,
-              num_predict: 4096,
-            },
-            timeoutMs: 120_000,
-          }
-        );
-      }
+      const lifecycleHandler = typeof context.onProgress === "function" ? context.onProgress : null;
+
+      await modelLock.withLock("Coding Agent", CODING_MODEL, async () => {
+        if (coderClientFn) {
+          generatedCodeText = await coderClientFn(messages);
+        } else {
+          generatedCodeText = await sendChatToOllama(
+            messages,
+            CODING_MODEL,
+            {
+              options: {
+                temperature: 0.2,
+                num_predict: 4096,
+              },
+              timeoutMs: 120_000,
+            }
+          );
+        }
+      }, lifecycleHandler);
 
       const cleanCode = typeof generatedCodeText === "string" ? generatedCodeText.trim() : "";
 
