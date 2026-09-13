@@ -110,13 +110,14 @@ export async function executeUnifiedRetrieval({
   if (shouldQueryKB) {
     try {
       const queryVector = await generateEmbedding(cleanQuery);
+      const searchCandidateLimit = Math.max(limit * 3, 30);
       const kbMatches = await searchKnowledgeBasePoints({
         vector: queryVector,
         documentId: documentId ? String(documentId) : null,
         workspaceId: workspaceId || "default",
         userId: userId ? String(userId) : null,
-        limit,
-        scoreThreshold,
+        limit: searchCandidateLimit,
+        scoreThreshold: Math.min(scoreThreshold, 0.30),
       });
 
       if (Array.isArray(kbMatches) && kbMatches.length > 0) {

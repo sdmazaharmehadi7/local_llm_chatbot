@@ -23,6 +23,11 @@ import retrievalTool from "./tools/retrieval.tool.js";
 import codingTool from "./tools/coding.tool.js";
 import executeCodeTool from "./tools/executeCode.tool.js";
 import visionTool from "./tools/vision.tool.js";
+import engineeringFormulaTool from "./tools/engineeringFormula.tool.js";
+import unitConversionTool from "./tools/unitConversion.tool.js";
+import thresholdCheckTool from "./tools/thresholdCheck.tool.js";
+import statisticsTool from "./tools/statistics.tool.js";
+import trendAnalysisTool from "./tools/trendAnalysis.tool.js";
 
 /**
  * Zod schema for calculator tool
@@ -139,6 +144,164 @@ export const VisionSchema = z.object({
 });
 
 /**
+ * Zod schema for engineering formula tool
+ */
+export const EngineeringFormulaSchema = z.object({
+  formula: z
+    .string()
+    .min(1, "Formula name is required")
+    .describe(
+      "The engineering formula to calculate: 'pressure_difference', 'percentage_difference', 'percentage_change', 'efficiency', 'electrical_power', 'mechanical_power', 'density', 'flow_rate', 'velocity', 'kinetic_energy', or 'potential_energy'."
+    ),
+  discharge_pressure: z.number().optional().describe("Discharge pressure value (for pressure_difference)."),
+  suction_pressure: z.number().optional().describe("Suction pressure value (for pressure_difference)."),
+  value_a: z.number().optional().describe("Value A (for percentage_difference)."),
+  value_b: z.number().optional().describe("Value B / reference limit (for percentage_difference)."),
+  old_value: z.number().optional().describe("Initial/old value (for percentage_change)."),
+  new_value: z.number().optional().describe("Final/new value (for percentage_change)."),
+  useful_output: z.number().optional().describe("Useful output energy/power (for efficiency)."),
+  input: z.number().optional().describe("Total input energy/power (for efficiency)."),
+  voltage: z.number().optional().describe("Voltage in Volts (for electrical_power)."),
+  current: z.number().optional().describe("Current in Amperes (for electrical_power)."),
+  speed_rpm: z.number().optional().describe("Rotational speed in RPM (for mechanical_power)."),
+  torque_nm: z.number().optional().describe("Torque in Newton-meters (for mechanical_power)."),
+  mass: z.number().optional().describe("Mass in kg (for density, kinetic_energy, potential_energy)."),
+  volume: z.number().optional().describe("Volume in m³ (for density, flow_rate)."),
+  time: z.number().optional().describe("Time in seconds (for flow_rate)."),
+  flow_rate: z.number().optional().describe("Flow rate in m³/s (for velocity)."),
+  area: z.number().optional().describe("Cross-sectional area in m² (for velocity)."),
+  velocity: z.number().optional().describe("Velocity in m/s (for kinetic_energy)."),
+  height: z.number().optional().describe("Height/elevation in meters (for potential_energy)."),
+  gravity: z.number().optional().describe("Gravitational acceleration (default 9.81 m/s²)."),
+  parameters: z
+    .record(z.any())
+    .optional()
+    .describe("Optional key-value parameters object containing formula inputs."),
+  unit: z.string().optional().describe("Optional physical unit for the result."),
+});
+
+/**
+ * Zod schema for unit conversion tool
+ */
+export const UnitConversionSchema = z.object({
+  value: z
+    .union([z.number(), z.string()])
+    .transform((val) => {
+      const num = Number(val);
+      return Number.isNaN(num) ? val : num;
+    })
+    .describe("The numerical magnitude/value to convert."),
+  from_unit: z
+    .string()
+    .optional()
+    .describe(
+      "Source unit (e.g. 'psi', 'bar', 'kPa', 'Pa', '°C', '°F', 'K', 'mm', 'm', 'inch', 'ft', 'kg', 'lb', 'L/s', 'm³/h', 'kW', 'hp', 'kWh')."
+    ),
+  from: z.string().optional().describe("Alias for from_unit."),
+  to_unit: z
+    .string()
+    .optional()
+    .describe(
+      "Target unit (e.g. 'bar', 'psi', 'MPa', '°C', 'K', 'm', 'inch', 'kg', 'lb', 'L/min', 'm³/s', 'W', 'hp', 'MJ')."
+    ),
+  to: z.string().optional().describe("Alias for to_unit."),
+}).transform((data) => ({
+  value: data.value,
+  from_unit: data.from_unit || data.from || "",
+  to_unit: data.to_unit || data.to || "",
+}));
+
+/**
+ * Zod schema for threshold check tool
+ */
+export const ThresholdCheckSchema = z.object({
+  value: z
+    .union([z.number(), z.string()])
+    .transform((val) => {
+      const num = Number(val);
+      return Number.isNaN(num) ? val : num;
+    })
+    .describe("The numerical value to check."),
+  limit: z
+    .union([z.number(), z.string()])
+    .optional()
+    .transform((val) => {
+      if (val === undefined || val === null) return undefined;
+      const num = Number(val);
+      return Number.isNaN(num) ? val : num;
+    })
+    .describe("The threshold or allowable limit to compare against."),
+  threshold: z.union([z.number(), z.string()]).optional().describe("Alias for limit."),
+  operator: z
+    .enum([">", "<", ">=", "<=", "==", "!="])
+    .optional()
+    .default(">")
+    .describe("Comparison operator: '>' (default), '<', '>=', '<=', '==', or '!='."),
+  unit: z.string().optional().describe("Optional physical unit of the value and limit (e.g. 'bar', 'mm/s', '°C')."),
+}).transform((data) => ({
+  value: data.value,
+  limit: data.limit !== undefined ? data.limit : (data.threshold !== undefined ? Number(data.threshold) : undefined),
+  operator: data.operator || ">",
+  unit: data.unit || "",
+}));
+
+/**
+ * Zod schema for statistics tool
+ */
+export const StatisticsSchema = z.object({
+  values: z
+    .array(z.union([z.number(), z.string()]))
+    .optional()
+    .describe("Array of numerical data points to analyze."),
+  data: z
+    .array(z.union([z.number(), z.string()]))
+    .optional()
+    .describe("Alias for values array."),
+  unit: z.string().optional().describe("Optional physical unit of the data points."),
+}).transform((data) => {
+  const raw = data.values || data.data || [];
+  const cleanVals = raw
+    .map((v) => Number(v))
+    .filter((n) => !Number.isNaN(n));
+  return {
+    values: cleanVals,
+    unit: data.unit || "",
+  };
+});
+
+/**
+ * Zod schema for trend analysis tool
+ */
+export const TrendAnalysisSchema = z.object({
+  values: z
+    .array(z.union([z.number(), z.string()]))
+    .optional()
+    .describe("Chronological array of sequential data readings to evaluate trend."),
+  data: z
+    .array(z.union([z.number(), z.string()]))
+    .optional()
+    .describe("Alias for values array."),
+  tolerance_percentage: z
+    .union([z.number(), z.string()])
+    .optional()
+    .default(1.0)
+    .describe("Percentage tolerance band to consider a trend stable (default 1.0%)."),
+  tolerance: z.union([z.number(), z.string()]).optional().describe("Alias for tolerance_percentage."),
+  unit: z.string().optional().describe("Optional physical unit of the readings."),
+}).transform((data) => {
+  const raw = data.values || data.data || [];
+  const cleanVals = raw
+    .map((v) => Number(v))
+    .filter((n) => !Number.isNaN(n));
+  const rawTol = data.tolerance_percentage !== undefined ? data.tolerance_percentage : (data.tolerance !== undefined ? data.tolerance : 1.0);
+  return {
+    values: cleanVals,
+    tolerance_percentage: Number(rawTol) || 1.0,
+    unit: data.unit || "",
+  };
+});
+
+/**
  * Factory creating LangChain StructuredTool instances bound to caller context.
  *
  * @param {object} [context={}]
@@ -219,7 +382,74 @@ export function createAgentTools(context = {}) {
     },
   });
 
-  return [calcTool, textTool, retrieveTool, codeTool, execTool, visTool];
+  const formulaTool = new DynamicStructuredTool({
+    name: "engineering_formula",
+    description:
+      "Evaluates deterministic controlled engineering formulas (pressure_difference, percentage_difference, percentage_change, efficiency, electrical_power, mechanical_power, density, flow_rate, velocity, kinetic_energy, potential_energy). Use when standard engineering calculation is required.",
+    schema: EngineeringFormulaSchema,
+    func: async (input) => {
+      const res = await engineeringFormulaTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  const unitTool = new DynamicStructuredTool({
+    name: "unit_conversion",
+    description:
+      "Converts physical quantities deterministically across standard engineering units (pressure, temperature, length, mass, flow, energy, power). Use when converting values or reconciling mismatched engineering units.",
+    schema: UnitConversionSchema,
+    func: async (input) => {
+      const res = await unitConversionTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  const thresholdTool = new DynamicStructuredTool({
+    name: "threshold_check",
+    description:
+      "Compares a numerical value deterministically against an allowable engineering limit/threshold using operators (>, <, >=, <=, ==, !=). Computes difference and percentage of limit. Does NOT invent limits.",
+    schema: ThresholdCheckSchema,
+    func: async (input) => {
+      const res = await thresholdCheckTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  const statsTool = new DynamicStructuredTool({
+    name: "statistics",
+    description:
+      "Computes deterministic summary statistics (mean, median, min, max, range, variance, standard deviation) for numerical data arrays.",
+    schema: StatisticsSchema,
+    func: async (input) => {
+      const res = await statisticsTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  const trendTool = new DynamicStructuredTool({
+    name: "trend_analysis",
+    description:
+      "Evaluates chronological sequential numerical readings to determine trend direction (increasing, decreasing, stable), total change, percentage change, and rate of change.",
+    schema: TrendAnalysisSchema,
+    func: async (input) => {
+      const res = await trendAnalysisTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  return [
+    calcTool,
+    textTool,
+    retrieveTool,
+    codeTool,
+    execTool,
+    visTool,
+    formulaTool,
+    unitTool,
+    thresholdTool,
+    statsTool,
+    trendTool,
+  ];
 }
 
 /**
@@ -265,6 +495,11 @@ export default {
   CodingSchema,
   ExecuteCodeSchema,
   VisionSchema,
+  EngineeringFormulaSchema,
+  UnitConversionSchema,
+  ThresholdCheckSchema,
+  StatisticsSchema,
+  TrendAnalysisSchema,
   createAgentTools,
   getAgentToolsMetadata,
 };

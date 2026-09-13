@@ -37,8 +37,22 @@ if (typeof process !== "undefined" && process.env) {
   process.env.LANGCHAIN_TRACING_V2 = "false";
 }
 
+export const WORKFLOW_TOOL_BUDGETS = {
+  [WORKFLOW_TYPES.KNOWLEDGE_RETRIEVAL]: 3,
+  [WORKFLOW_TYPES.RETRIEVAL_CALCULATION]: 4,
+  [WORKFLOW_TYPES.VISION_CALCULATION]: 4,
+  [WORKFLOW_TYPES.VISION_KNOWLEDGE]: 4,
+  [WORKFLOW_TYPES.CODING_SANDBOX]: 6,
+  [WORKFLOW_TYPES.ENGINEERING]: 5,
+  [WORKFLOW_TYPES.DATA_ANALYSIS]: 4,
+  [WORKFLOW_TYPES.COMPLIANCE_CHECK]: 4,
+  [WORKFLOW_TYPES.DOCUMENT_ANALYSIS]: 4,
+  [WORKFLOW_TYPES.MULTI_STEP_ANALYSIS]: 10,
+  [WORKFLOW_TYPES.GENERAL]: 5,
+};
+
 /**
- * Normalize an action fingerprint for stuck loop and duplicate query detection.
+ * Normalize an action fingerprint for stuck loop, duplicate query, and cached execution detection.
  *
  * @param {string} toolName
  * @param {object} input
@@ -75,6 +89,34 @@ export function normalizeActionFingerprint(toolName, input = {}) {
     const prompt = String(input?.prompt || "").trim().toLowerCase();
     return `${normTool}:::prompt=${prompt.slice(0, 100)}`;
   }
+  if (normTool === "engineering_formula") {
+    const formula = String(input?.formula || "").trim().toLowerCase();
+    const params = input?.parameters || input || {};
+    return `${normTool}:::formula=${formula}:::params=${JSON.stringify(params)}`;
+  }
+  if (normTool === "unit_conversion") {
+    const from = String(input?.from_unit || input?.from || "").trim().toLowerCase();
+    const to = String(input?.to_unit || input?.to || "").trim().toLowerCase();
+    const val = Number(input?.value !== undefined ? input.value : input?.amount);
+    return `${normTool}:::from=${from}:::to=${to}:::val=${val}`;
+  }
+  if (normTool === "threshold_check") {
+    const val = Number(input?.value !== undefined ? input.value : input?.val);
+    const lim = Number(input?.limit !== undefined ? input.limit : input?.threshold);
+    const op = String(input?.operator || input?.op || ">").trim().toLowerCase();
+    return `${normTool}:::val=${val}:::lim=${lim}:::op=${op}`;
+  }
+  if (normTool === "statistics") {
+    const rawVals = input?.values || input?.data || [];
+    const cleanVals = Array.isArray(rawVals) ? rawVals.map((v) => Number(v)).filter((n) => !Number.isNaN(n)) : [];
+    return `${normTool}:::values=${JSON.stringify(cleanVals)}`;
+  }
+  if (normTool === "trend_analysis") {
+    const rawVals = input?.values || input?.data || [];
+    const cleanVals = Array.isArray(rawVals) ? rawVals.map((v) => Number(v)).filter((n) => !Number.isNaN(n)) : [];
+    const tol = input?.tolerance_percentage !== undefined ? input.tolerance_percentage : (input?.tolerance ?? 1.0);
+    return `${normTool}:::values=${JSON.stringify(cleanVals)}:::tol=${tol}`;
+  }
   return `${normTool}:::${JSON.stringify(input || {})}`;
 }
 
@@ -98,6 +140,16 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => [],
   }),
   toolExecutionCount: Annotation({ reducer: (_, y) => y ?? 0, default: () => 0 }),
+  schemaErrorCount: Annotation({ reducer: (_, y) => y ?? 0, default: () => 0 }),
+  executedToolSignatures: Annotation({
+    reducer: (x, y) => {
+      if (y && typeof y === "object") {
+        return { ...(x || {}), ...y };
+      }
+      return x || {};
+    },
+    default: () => ({}),
+  }),
   status: Annotation({ reducer: (_, y) => y, default: () => AGENT_STATUS.PLANNING }),
   currentAction: Annotation({ reducer: (_, y) => y, default: () => null }),
   finalResponse: Annotation({ reducer: (_, y) => y, default: () => "" }),
@@ -250,6 +302,18 @@ class AgentGraphService {
         };
       }
 
+      if (
+        state.status === AGENT_STATUS.COMPLETED ||
+        state.status === AGENT_STATUS.FAILED ||
+        state.status === AGENT_STATUS.CANCELLED
+      ) {
+        return {
+          status: state.status,
+          finalResponse: state.finalResponse || "Task completed.",
+          currentAction: state.currentAction || { action: AGENT_ACTION_TYPES.FINAL, answer: state.finalResponse || "Task completed." },
+        };
+      }
+
       if (state.steps.length >= AGENT_LIMITS.MAX_AGENT_STEPS) {
         const errMsg = `Maximum steps reached: LangGraph execution limit exceeded (${AGENT_LIMITS.MAX_AGENT_STEPS} steps).`;
         emit({ status: "error", error: errMsg });
@@ -352,7 +416,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         };
       }
 
-      let parsed = parseBrainOutput(rawOutput);
+      let parsed = parseBrainOutput(rawOutput, state.workflow?.type);
 
       // Single-turn self-correction retry on malformed JSON
       if (!parsed.valid) {
@@ -366,7 +430,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
             },
           ];
           const retryOutput = await this._callBrainLlm(retryMessages);
-          parsed = parseBrainOutput(retryOutput);
+          parsed = parseBrainOutput(retryOutput, state.workflow?.type);
         } catch {
           // retry failed, use original error
         }
@@ -403,7 +467,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
             },
           ];
           const retryOutput = await this._callBrainLlm(retryMessages);
-          const retryParsed = parseBrainOutput(retryOutput);
+          const retryParsed = parseBrainOutput(retryOutput, state.workflow?.type);
           if (retryParsed.valid) {
             const retryValidation = validateToolSelectionPolicy(retryParsed.decision, {
               userRequest: state.userRequest,
@@ -441,7 +505,9 @@ Return ONLY a valid JSON object matching the Response Schema.`;
       }
 
       const effectiveWorkflow =
-        decision.workflow || state.workflow?.type || WORKFLOW_TYPES.GENERAL;
+        decision.workflow && decision.workflow !== WORKFLOW_TYPES.GENERAL
+          ? decision.workflow
+          : (state.workflow?.type || WORKFLOW_TYPES.GENERAL);
 
       if (state.steps.length === 0) {
         console.log(`\n[Agent]`);
@@ -512,8 +578,19 @@ Return ONLY a valid JSON object matching the Response Schema.`;
       const decision = state.currentAction;
       const toolName = decision?.tool || decision?.toolName;
 
-      if (state.toolExecutionCount >= AGENT_LIMITS.MAX_TOOL_EXECUTIONS) {
-        const errMsg = `Execution limit exceeded: maximum allowed tool executions (${AGENT_LIMITS.MAX_TOOL_EXECUTIONS}) reached.`;
+      const effectiveWorkflow =
+        decision?.workflow && decision.workflow !== WORKFLOW_TYPES.GENERAL
+          ? decision.workflow
+          : (state.workflow?.type || WORKFLOW_TYPES.GENERAL);
+
+      // 1. Workflow-aware tool execution budget check
+      const maxWorkflowBudget = Math.max(
+        WORKFLOW_TOOL_BUDGETS[effectiveWorkflow] || AGENT_LIMITS.MAX_TOOL_EXECUTIONS,
+        AGENT_LIMITS.MAX_TOOL_EXECUTIONS
+      );
+      if (state.toolExecutionCount >= maxWorkflowBudget) {
+        const errMsg = `Execution limit exceeded: Maximum ${maxWorkflowBudget} tool executions allowed.`;
+        console.warn(`[agentGraph] ${errMsg}`);
         emit({ status: "error", error: errMsg });
         return {
           status: AGENT_STATUS.FAILED,
@@ -522,8 +599,95 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         };
       }
 
-      // Check stuck loop protection (consecutive identical tool calls with normalized fingerprint)
+      // 2. Action Fingerprint & Tool Call Deduplication
       const actionFingerprint = normalizeActionFingerprint(toolName, decision.input);
+
+      // Check executed tool signatures: If already succeeded, DO NOT execute again. Return cached result!
+      if (state.executedToolSignatures && state.executedToolSignatures[actionFingerprint]) {
+        const cachedOutput = state.executedToolSignatures[actionFingerprint];
+        console.log(`\n[Agent State] Deduplicated tool call: "${toolName}" already succeeded. Reusing cached result.`);
+        emit({
+          status: "tool_complete",
+          tool: toolName,
+          success: true,
+          message: `✓ Reusing previously computed result for ${toolName}`,
+        });
+
+        const stepRecord = {
+          type: "tool",
+          action: "tool",
+          tool: toolName,
+          toolName,
+          reason: decision.reason,
+          input: decision.input,
+          output: cachedOutput,
+          observation: {
+            ...cachedOutput,
+            cached: true,
+            message: "Result already obtained in previous step. Do not repeat identical tool call. Proceed to next step or final answer.",
+          },
+          status: "completed",
+          executionTimeMs: 0,
+        };
+
+        return {
+          steps: [stepRecord],
+          toolExecutionCount: state.toolExecutionCount + 1,
+          status: AGENT_STATUS.PLANNING,
+          workflow: {
+            type: effectiveWorkflow,
+            completedSteps: [toolName],
+            retryCount: state.workflow?.retryCount || 0,
+          },
+        };
+      }
+
+      // 3. Threshold Check Limit Guard: Verify limit != undefined before calling threshold_check
+      if (toolName === "threshold_check") {
+        const lim = decision.input?.limit !== undefined ? decision.input?.limit : decision.input?.threshold;
+        if (lim === undefined || lim === null || String(lim).trim() === "" || Number.isNaN(Number(lim))) {
+          const errMsg = "Cannot check threshold: limit is undefined. State that the limit is unavailable in documentation; never invent safety limits.";
+          console.warn(`[agentGraph] threshold_check rejected: limit is undefined`);
+          emit({
+            status: "tool_complete",
+            tool: toolName,
+            success: false,
+            message: `✗ Tool "${toolName}" missing limit.`,
+          });
+          const structuredErr = {
+            tool: "threshold_check",
+            status: "error",
+            code: "MISSING_LIMIT",
+            retryable: false,
+            error: errMsg,
+            message: "Limit is unavailable in documentation. State that the limit is unavailable; never invent safety limits.",
+          };
+          const stepRecord = {
+            type: "tool",
+            action: "tool",
+            tool: toolName,
+            toolName,
+            reason: decision.reason,
+            input: decision.input,
+            output: structuredErr,
+            observation: structuredErr,
+            status: "failed",
+            executionTimeMs: 0,
+          };
+          return {
+            steps: [stepRecord],
+            toolExecutionCount: state.toolExecutionCount + 1,
+            status: AGENT_STATUS.PLANNING,
+            workflow: {
+              type: effectiveWorkflow,
+              completedSteps: [toolName],
+              retryCount: (state.workflow?.retryCount || 0) + 1,
+            },
+          };
+        }
+      }
+
+      // 4. Stuck loop protection (consecutive identical tool calls with normalized fingerprint)
       const recentSteps = state.steps.slice(-AGENT_LIMITS.MAX_CONSECUTIVE_IDENTICAL_ACTIONS);
       if (
         recentSteps.length >= AGENT_LIMITS.MAX_CONSECUTIVE_IDENTICAL_ACTIONS &&
@@ -532,21 +696,6 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         )
       ) {
         const errMsg = `Agent stuck: detected repeated identical action for tool "${toolName}". Execution stopped safely.`;
-        emit({ status: "error", error: errMsg });
-        return {
-          status: AGENT_STATUS.FAILED,
-          error: errMsg,
-          currentAction: { action: "error", reason: errMsg },
-        };
-      }
-
-      // Specific duplicate retrieval query protection across previous steps
-      const previousRetrievalFps = state.steps
-        .filter((s) => (s.toolName || s.tool) === "retrieve_information")
-        .map((s) => normalizeActionFingerprint("retrieve_information", s.input));
-
-      if (toolName === "retrieve_information" && previousRetrievalFps.includes(actionFingerprint)) {
-        const errMsg = `Agent stuck: detected repeated identical query for tool "retrieve_information" ("${decision.input?.query}"). Execution stopped safely.`;
         emit({ status: "error", error: errMsg });
         return {
           status: AGENT_STATUS.FAILED,
@@ -569,6 +718,16 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         toolDetail = `/ Language: ${decision.input?.language || "python"}`;
       } else if (toolName === "text_transform") {
         toolDetail = `/ Operation: ${decision.input?.operation || ""}`;
+      } else if (toolName === "engineering_formula") {
+        toolDetail = `/ Formula: ${decision.input?.formula || ""}`;
+      } else if (toolName === "unit_conversion") {
+        toolDetail = `/ Convert: ${decision.input?.value} ${decision.input?.from_unit} -> ${decision.input?.to_unit}`;
+      } else if (toolName === "threshold_check") {
+        toolDetail = `/ Check: ${decision.input?.value} ${decision.input?.operator || ">"} ${decision.input?.limit}`;
+      } else if (toolName === "statistics") {
+        toolDetail = `/ Stats: ${JSON.stringify(decision.input?.values || [])}`;
+      } else if (toolName === "trend_analysis") {
+        toolDetail = `/ Trend: ${JSON.stringify(decision.input?.values || [])}`;
       } else {
         toolDetail = `/ Input: ${JSON.stringify(decision.input || {})}`;
       }
@@ -581,6 +740,12 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           console.log(`Query: ${decision.input.query}`);
         } else if (toolName === "calculator" && decision.input.expression) {
           console.log(`Expression: ${decision.input.expression}`);
+        } else if (toolName === "engineering_formula" && decision.input.formula) {
+          console.log(`Formula: ${decision.input.formula}`);
+        } else if (toolName === "unit_conversion") {
+          console.log(`Convert: ${decision.input.value} ${decision.input.from_unit} to ${decision.input.to_unit}`);
+        } else if (toolName === "threshold_check") {
+          console.log(`Check: ${decision.input.value} ${decision.input.operator || ">"} ${decision.input.limit}`);
         } else if (toolName === "coding" && decision.input.task) {
           console.log(`Task: ${decision.input.task}`);
         } else if (toolName === "execute_code") {
@@ -605,6 +770,16 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           ? "🔒 Executing in isolated container sandbox..."
           : toolName === "vision"
           ? "👁️ Inspecting visual content with Qwen2.5-VL..."
+          : toolName === "engineering_formula"
+          ? `🔧 Calculating engineering formula (${decision.input?.formula || ""})...`
+          : toolName === "unit_conversion"
+          ? `🔧 Converting units (${decision.input?.from_unit} -> ${decision.input?.to_unit})...`
+          : toolName === "threshold_check"
+          ? "🔧 Checking threshold limit..."
+          : toolName === "statistics"
+          ? "🔧 Computing statistical metrics..."
+          : toolName === "trend_analysis"
+          ? "🔧 Analyzing data trend..."
           : `🔧 Using ${toolName}...`;
 
       emit({
@@ -714,6 +889,27 @@ Return ONLY a valid JSON object matching the Response Schema.`;
             console.log(`Sandbox output (${statusDesc})`);
             console.log(`\n[Sandbox]`);
             console.log(`Execution ${isSuccess ? "succeeded" : "failed"}`);
+          } else if (toolName === "engineering_formula") {
+            const resVal = parsedResult?.result !== undefined ? parsedResult.result : JSON.stringify(parsedResult);
+            console.log(`Formula: ${parsedResult?.formula} -> Result: ${resVal} ${parsedResult?.unit || ""}`);
+            console.log(`\n[Tool]`);
+            console.log(`Engineering formula result: ${resVal} ${parsedResult?.unit || ""}`);
+          } else if (toolName === "unit_conversion") {
+            console.log(`Converted: ${parsedResult?.value} ${parsedResult?.from_unit} = ${parsedResult?.result} ${parsedResult?.to_unit}`);
+            console.log(`\n[Tool]`);
+            console.log(`Unit conversion result: ${parsedResult?.result} ${parsedResult?.to_unit}`);
+          } else if (toolName === "threshold_check") {
+            console.log(`Check: ${parsedResult?.summary || parsedResult?.status_code}`);
+            console.log(`\n[Tool]`);
+            console.log(`Threshold status: ${parsedResult?.status_code}`);
+          } else if (toolName === "statistics") {
+            console.log(`Mean: ${parsedResult?.mean}, Median: ${parsedResult?.median}, Min: ${parsedResult?.minimum}, Max: ${parsedResult?.maximum}`);
+            console.log(`\n[Tool]`);
+            console.log(`Statistics calculated: Mean = ${parsedResult?.mean}`);
+          } else if (toolName === "trend_analysis") {
+            console.log(`Trend: ${parsedResult?.trend} (${parsedResult?.percentage_change}%)`);
+            console.log(`\n[Tool]`);
+            console.log(`Trend evaluated: ${parsedResult?.trend}`);
           } else {
             console.log(typeof parsedResult === "object" ? JSON.stringify(parsedResult) : String(parsedResult));
           }
@@ -729,6 +925,16 @@ Return ONLY a valid JSON object matching the Response Schema.`;
               ? "✓ Code generated by Qwen2.5-Coder"
               : toolName === "execute_code"
               ? "✓ Code executed in isolated sandbox"
+              : toolName === "engineering_formula"
+              ? "✓ Engineering formula calculated"
+              : toolName === "unit_conversion"
+              ? "✓ Unit conversion completed"
+              : toolName === "threshold_check"
+              ? "✓ Threshold check completed"
+              : toolName === "statistics"
+              ? "✓ Statistical analysis completed"
+              : toolName === "trend_analysis"
+              ? "✓ Trend analysis completed"
               : "✓ Tool completed"
             : `✗ Tool "${toolName}" failed`;
 
@@ -826,15 +1032,53 @@ Return ONLY a valid JSON object matching the Response Schema.`;
       const isExecCodeFail = toolName === "execute_code" && stepRecord.status === "failed";
       const retryInc = isExecCodeFail ? 1 : 0;
 
+      // Track schema error count for bounded correction (max 1 correction attempt)
+      const isSchemaError =
+        stepRecord.status === "failed" &&
+        (stepRecord.observation?.code === "INVALID_ARGUMENT_TYPE" ||
+          (stepRecord.observation?.error && /schema|expected|validation|missing or invalid/i.test(stepRecord.observation.error)));
+      const newSchemaErrorCount = isSchemaError ? (state.schemaErrorCount || 0) + 1 : (state.schemaErrorCount || 0);
+
+      if (isSchemaError && newSchemaErrorCount >= 2) {
+        console.warn(`[agentGraph] Schema validation error retry limit reached for ${toolName}. Terminating gracefully.`);
+        return {
+          steps: [stepRecord],
+          toolExecutionCount: state.toolExecutionCount + 1,
+          status: AGENT_STATUS.COMPLETED,
+          finalResponse: `Could not complete ${toolName}: invalid parameters provided after correction attempt (${stepRecord.observation?.error || "schema error"}).`,
+          currentAction: {
+            action: AGENT_ACTION_TYPES.FINAL,
+            type: AGENT_ACTION_TYPES.FINAL,
+            answer: `Could not complete ${toolName}: invalid parameters provided after correction attempt (${stepRecord.observation?.error || "schema error"}).`,
+            reason: "Schema error retry limit reached.",
+          },
+          workflow: {
+            type: effectiveWorkflow,
+            status: WORKFLOW_STATUS.COMPLETED,
+            currentStep: "final",
+          },
+        };
+      }
+
       const nextState = {
         steps: [stepRecord],
         toolExecutionCount: state.toolExecutionCount + 1,
+        schemaErrorCount: newSchemaErrorCount,
         status: AGENT_STATUS.PLANNING,
         workflow: {
+          type: effectiveWorkflow,
           completedSteps: [toolName],
           retryCount: (state.workflow?.retryCount || 0) + retryInc,
         },
       };
+
+      // Record successful tool result in executedToolSignatures
+      if (stepRecord.status === "completed") {
+        nextState.executedToolSignatures = {
+          [actionFingerprint]: stepRecord.output,
+        };
+      }
+
       if (newFacts.length > 0) {
         nextState.retrievedFacts = newFacts;
       }

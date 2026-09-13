@@ -28,6 +28,25 @@ const KB_SCORE_THRESHOLD =
  * @param {string} query
  * @returns {Array<string>}
  */
+/**
+ * Extract explicit industrial document/tag identifiers from text (e.g. ENG-PMP-014, SAF-PMP-001, SOP-PRV-114, C-301, E-204B).
+ *
+ * @param {string} text
+ * @returns {Array<string>}
+ */
+export function extractDocumentIdentifiers(text = "") {
+  if (!text || typeof text !== "string") return [];
+  const matches = text.match(/\b([A-Z]{2,6}-[A-Z0-9]{2,6}(?:-[A-Z0-9]{2,6})?|[A-Z]-\d{3}[A-Z]?)\b/gi) || [];
+  return [...new Set(matches.map((m) => m.toUpperCase()))];
+}
+
+/**
+ * Extract meaningful search terms from a query string, filtering out punctuation
+ * and standard conversational/stop words.
+ *
+ * @param {string} query
+ * @returns {Array<string>}
+ */
 export function extractSignificantTerms(query = "") {
   if (!query || typeof query !== "string") return [];
 
@@ -120,12 +139,9 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
   }
 
   // 2. Relative Relevance & Topic Filtering:
-  // Separate retrieved candidates from actual relevant context and cited sources.
-  // Prevent unrelated KB documents from sneaking in due to dense embedding floor similarities (~0.55 - 0.65).
+  // Detect explicit document identifiers (e.g. ENG-PMP-014, SAF-PMP-001, SOP-PRV-114, C-301)
+  const explicitDocCodes = extractDocumentIdentifiers(query);
   const queryTerms = extractSignificantTerms(query);
-  const topScore = Math.max(
-    ...initialPoints.map((pt) => (typeof pt.score === "number" ? pt.score : 0))
-  );
 
   // Group candidate points by document to assess document-level relevance and term matching
   const docCandMap = new Map();
@@ -140,6 +156,7 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
         bestScore: typeof pt.score === "number" ? pt.score : 0,
         points: [],
         combinedText: "",
+        matchesExplicitCode: false,
       });
     }
     const cand = docCandMap.get(docKey);
@@ -149,12 +166,49 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
     cand.combinedText += " " + (p.filename || "") + " " + (p.text || "");
   }
 
-  // Determine which documents qualify based on top score gap and term matching
+  // Check which documents match any explicitly mentioned document code in the query
+  let anyDocMatchesExplicitCode = false;
+  for (const cand of docCandMap.values()) {
+    const candUpper = cand.combinedText.toUpperCase();
+    const candFileUpper = cand.filename.toUpperCase();
+    const hasCodeMatch = explicitDocCodes.some(
+      (code) => candUpper.includes(code) || candFileUpper.includes(code)
+    );
+    if (hasCodeMatch) {
+      cand.matchesExplicitCode = true;
+      anyDocMatchesExplicitCode = true;
+    }
+  }
+
+  // Recalculate topScore, prioritizing explicit code matches if present
+  const topScore = Math.max(
+    ...initialPoints.map((pt) => {
+      const p = pt.payload || {};
+      const docKey = String(p.documentId || p.filename || "unknown");
+      const cand = docCandMap.get(docKey);
+      const base = typeof pt.score === "number" ? pt.score : 0;
+      return cand?.matchesExplicitCode ? base + 0.35 : base;
+    })
+  );
+
+  // Determine which documents qualify based on explicit matches, score gap, and term matching
   const qualifyingDocKeys = new Set();
   for (const [docKey, cand] of docCandMap.entries()) {
     // If targetDocumentId is explicitly set, the doc matches by definition
     if (targetDocumentId && String(cand.documentId) === targetDocumentId) {
       qualifyingDocKeys.add(docKey);
+      continue;
+    }
+
+    // Explicit document code match: ALWAYS qualifies!
+    if (cand.matchesExplicitCode) {
+      qualifyingDocKeys.add(docKey);
+      continue;
+    }
+
+    // If the query explicitly named other documents and this document matches NONE of them,
+    // do not allow this unrelated document to qualify
+    if (anyDocMatchesExplicitCode && !cand.matchesExplicitCode) {
       continue;
     }
 
@@ -167,16 +221,12 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
 
     let qualifies = false;
     if (topScore >= 0.70) {
-      // Strong semantic match exists (e.g. 0.75 - 0.95)
-      // Chunks within 0.08 of topScore qualify
-      // Or chunks within 0.12 with at least 2 distinct query term matches qualify
       if (scoreGap <= 0.08) {
         qualifies = true;
       } else if (scoreGap <= 0.12 && docTermMatches >= 2) {
         qualifies = true;
       }
     } else {
-      // Moderate semantic match (e.g. 0.55 - 0.70)
       if (queryTerms.length === 0) {
         qualifies = scoreGap <= 0.15;
       } else if (docTermMatches >= 2) {
@@ -193,11 +243,14 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
     }
   }
 
-  // Filter points to only those from qualifying documents and with sufficient chunk score
+  // Filter points to only those from qualifying documents
   const qualifiedPoints = initialPoints.filter((pt) => {
     const p = pt.payload || {};
     const docKey = String(p.documentId || p.filename || "unknown");
     if (!qualifyingDocKeys.has(docKey)) return false;
+
+    const cand = docCandMap.get(docKey);
+    if (cand?.matchesExplicitCode) return true;
 
     // Discard chunks with extreme drop from the document's or global top score
     const ptScore = typeof pt.score === "number" ? pt.score : 0;
@@ -216,10 +269,15 @@ export function buildKnowledgeBaseContext(points = [], options = {}) {
     };
   }
 
-  // Sort qualified points by score descending so the most relevant chunks are chosen first
+  // Sort qualified points by score descending, giving precedence to explicit code matches
   qualifiedPoints.sort((a, b) => {
-    const scoreA = typeof a.score === "number" ? a.score : 0;
-    const scoreB = typeof b.score === "number" ? b.score : 0;
+    const pA = a.payload || {};
+    const pB = b.payload || {};
+    const candA = docCandMap.get(String(pA.documentId || pA.filename || ""));
+    const candB = docCandMap.get(String(pB.documentId || pB.filename || ""));
+
+    const scoreA = (typeof a.score === "number" ? a.score : 0) + (candA?.matchesExplicitCode ? 0.4 : 0);
+    const scoreB = (typeof b.score === "number" ? b.score : 0) + (candB?.matchesExplicitCode ? 0.4 : 0);
     return scoreB - scoreA;
   });
 

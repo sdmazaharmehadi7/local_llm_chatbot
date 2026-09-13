@@ -11,6 +11,7 @@
 import crypto from "crypto";
 import { agentGraphService } from "./agentGraph.service.js";
 import { AGENT_STATUS, WORKFLOW_TYPES, WORKFLOW_STATUS } from "./agent.types.js";
+import { classifyInitialWorkflow } from "./qwenBrain.service.js";
 import Message from "../../models/Message.js";
 import Chat from "../../models/Chat.js";
 import { streamChatFromOllama } from "../ollama.service.js";
@@ -123,6 +124,12 @@ export async function runAgentTask({
     options?.threadId ||
     (chatId ? `${effectiveUserId}:${chatId}` : `${effectiveUserId}:adhoc:${taskId}`);
 
+  const initialWorkflowType = classifyInitialWorkflow({
+    userRequest: message.trim(),
+    images: taskImages,
+    conversationHistory,
+  });
+
   let finalGraphState;
   try {
     finalGraphState = await app.invoke(
@@ -141,7 +148,7 @@ export async function runAgentTask({
         finalResponse: "",
         error: null,
         workflow: {
-          type: WORKFLOW_TYPES.GENERAL,
+          type: initialWorkflowType,
           status: WORKFLOW_STATUS.PENDING,
           currentStep: "",
           completedSteps: [],

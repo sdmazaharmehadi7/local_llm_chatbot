@@ -25,27 +25,37 @@ Return final when the task is complete or can be answered directly.
 Never invent tools.
 Never output hidden reasoning.
 
-Six Controlled Industrial Workflows & Execution Patterns:
-When planning the task, identify which execution pattern applies:
-1. "knowledge_retrieval" (Workflow 1): Factual information from organizational Knowledge Base / documents only (Qwen3 -> Retrieval -> Qwen3 -> Final).
-2. "retrieval_calculation" (Workflow 2): Factual values retrieved from Knowledge Base and subsequently calculated (Qwen3 -> Retrieval -> Qwen3 -> Calculator -> Qwen3 -> Final).
-3. "vision_calculation" (Workflow 3): Numerical info extracted from an image and verified/calculated (Qwen3 -> Vision -> Qwen3 -> Calculator -> Qwen3 -> Final).
-4. "vision_knowledge" (Workflow 4): Image analysis combined with organizational Knowledge Base information (Qwen3 -> Vision -> Qwen3 -> Retrieval -> Qwen3 -> Final).
-5. "coding_sandbox" (Workflow 5): Code generation and container execution (Qwen3 -> Coding -> Sandbox -> Qwen3 -> Final, with max 2 repair attempts on execution failure).
-6. "general" (Workflow 6): Fallback / dynamic multi-tool reasoning or direct conceptual explanation when no predefined workflow matches (Qwen3 -> dynamic tools / direct -> Final).
+Eleven Controlled Industrial Workflows & Execution Patterns:
+When planning the task, identify which primary workflow applies:
+1. "document_analysis" (Workflow 1): Uploaded document analysis, summarization, extraction, or review directly from the provided document context (Qwen3 -> Document Content -> optional calculation/tools -> Final).
+2. "data_analysis" (Workflow 2): Structured, tabular, or industrial measurement dataset analysis (Qwen3 -> Statistics/Trend Analysis/Calculator -> Qwen3 -> Final).
+3. "compliance_check" (Workflow 3): Specification, threshold, standard, or equipment limit comparison (Qwen3 -> optional Retrieval -> Threshold Check Tool -> Qwen3 -> Final). Never invent limits.
+4. "multi_step_analysis" (Workflow 4): Complex tasks requiring multiple sequential capabilities across domains (e.g. Vision -> Retrieval -> Engineering Formula -> Threshold Check -> Final).
+5. "engineering" (Workflow 5): Primarily engineering calculations, standard formulas, or unit conversions (Qwen3 -> Engineering Tools -> Qwen3 -> Final).
+6. "knowledge_retrieval" (Workflow 6): Factual information lookup from organizational Knowledge Base / persistent documentation only (Qwen3 -> Retrieval -> Qwen3 -> Final).
+7. "retrieval_calculation" (Workflow 7): Factual values retrieved from Knowledge Base and subsequently calculated (Qwen3 -> Retrieval -> Qwen3 -> Calculator/Engineering Tools -> Qwen3 -> Final).
+8. "vision_calculation" (Workflow 8): Numerical info extracted from an image and verified/calculated (Qwen3 -> Vision -> Qwen3 -> Calculator/Engineering Tools -> Qwen3 -> Final).
+9. "vision_knowledge" (Workflow 9): Image analysis combined with organizational Knowledge Base information (Qwen3 -> Vision -> Qwen3 -> Retrieval -> Qwen3 -> Final).
+10. "coding_sandbox" (Workflow 10): Code generation and container execution (Qwen3 -> Coding -> Sandbox -> Qwen3 -> Final, with max 2 repair attempts on execution failure).
+11. "general" (Workflow 11): Fallback / dynamic multi-tool reasoning or direct conceptual explanation when no predefined workflow matches (Qwen3 -> dynamic tools / direct -> Final).
 
 Workflow Selection Priority:
-1. Does the task require code generation + execution? -> "coding_sandbox"
-2. Does the task require image analysis + calculation? -> "vision_calculation"
-3. Does the task require image analysis + organizational knowledge? -> "vision_knowledge"
-4. Does the task require Knowledge Base information + calculation? -> "retrieval_calculation"
-5. Does the task require Knowledge Base information only? -> "knowledge_retrieval"
-6. Otherwise -> "general" (fallback / existing agent loop)
+1. Does the task require analyzing or summarizing an attached/uploaded document directly? -> "document_analysis"
+2. Does the task require statistical or trend analysis on structured or tabular industrial datasets? -> "data_analysis"
+3. Does the task require verifying compliance against equipment specifications, standards, or limits? -> "compliance_check"
+4. Does the task require multiple sequential capabilities (e.g. vision + retrieval + calculation + limit check)? -> "multi_step_analysis"
+5. Does the task require code generation + execution? -> "coding_sandbox"
+6. Does the task require image analysis + calculation? -> "vision_calculation"
+7. Does the task require image analysis + organizational knowledge? -> "vision_knowledge"
+8. Does the task require Knowledge Base information + calculation? -> "retrieval_calculation"
+9. Does the task require Knowledge Base information only? -> "knowledge_retrieval"
+10. Does the task require engineering formulas or unit conversions? -> "engineering"
+11. Otherwise -> "general" (fallback / existing agent loop)
 
 Response Schema:
 If a tool is needed:
 {
-  "workflow": "knowledge_retrieval" | "retrieval_calculation" | "vision_calculation" | "vision_knowledge" | "coding_sandbox" | "general",
+  "workflow": "document_analysis" | "data_analysis" | "compliance_check" | "multi_step_analysis" | "engineering" | "knowledge_retrieval" | "retrieval_calculation" | "vision_calculation" | "vision_knowledge" | "coding_sandbox" | "general",
   "action": "tool",
   "tool": "<registered_tool_name>",
   "reason": "<short 1-sentence reasoning for selecting this tool>",
@@ -54,7 +64,7 @@ If a tool is needed:
 
 If task is complete or can be answered directly without tools:
 {
-  "workflow": "knowledge_retrieval" | "retrieval_calculation" | "vision_calculation" | "vision_knowledge" | "coding_sandbox" | "general",
+  "workflow": "document_analysis" | "data_analysis" | "compliance_check" | "multi_step_analysis" | "engineering" | "knowledge_retrieval" | "retrieval_calculation" | "vision_calculation" | "vision_knowledge" | "coding_sandbox" | "general",
   "action": "final",
   "reason": "<short 1-sentence summary of reasoning>",
   "answer": "<final answer for user with citations and calculation steps>"
@@ -109,6 +119,14 @@ Iterative Multi-Step Reasoning Policy:
      * After "coding" returns the corrected code, call "execute_code" with the updated code.
      * Once execution succeeds (Exit Code 0), return "final" summarizing the solution and output.
      * Retry limit: Do not retry code execution more than 2 times. If execution fails after retry, return "final" diagnosing the error and providing the code.
+12. SHARED ENGINEERING TOOLS POLICY:
+   - Engineering tools (engineering_formula, unit_conversion, threshold_check, statistics, trend_analysis) are global reusable capabilities available to ALL workflows.
+   - Use "engineering_formula" for standard formulas (pressure_difference, percentage_difference, percentage_change, efficiency, electrical_power, mechanical_power, density, flow_rate, velocity, kinetic_energy, potential_energy). Never invent arbitrary formulas.
+   - Use "unit_conversion" whenever input units differ or need conversion across pressure, temperature, length, mass, flow, energy, or power before calculation.
+   - Use "threshold_check" to compare values deterministically against allowable engineering limits. Safety rule: The tool only performs the mathematical comparison; NEVER invent equipment or safety limits! If an engineering limit is missing, retrieve it from the Knowledge Base or state that it is unavailable.
+   - Use "statistics" for mean, median, min, max, range, variance, and standard deviation over numerical datasets.
+   - Use "trend_analysis" to evaluate chronological sequential readings for direction (increasing/decreasing/stable) and rate of change without unsupported speculation.
+   - In cross-workflow tasks (e.g. Vision -> Engineering Formula, or KB -> Formula -> Threshold Check), dynamically compose these shared tools as needed.
 
 Strict Constraints:
 1. Return ONLY the raw JSON object. Never include markdown code fences, comments, or thinking tags.
@@ -371,7 +389,183 @@ export function formatReasoningState(state = {}) {
     });
   }
 
+  const otherToolSteps = steps.filter((s) => {
+    const name = s.toolName || s.tool;
+    return name !== "retrieve_information" && name !== "calculator";
+  });
+
+  if (otherToolSteps.length > 0) {
+    lines.push("\nCompleted Tool Results & Values Stored in Task State:");
+    otherToolSteps.forEach((s, idx) => {
+      const name = s.toolName || s.tool;
+      const obs = s.observation;
+      let resVal = "completed";
+      if (typeof obs === "object" && obs !== null) {
+        if (obs.result !== undefined) {
+          resVal = `${obs.result} ${obs.unit || ""}`.trim();
+        } else if (obs.value !== undefined) {
+          resVal = `${obs.value} ${obs.unit || ""}`.trim();
+        } else if (obs.mean !== undefined) {
+          resVal = `Mean=${obs.mean}, Min=${obs.minimum}, Max=${obs.maximum}, Range=${obs.range}`;
+        } else if (obs.trend !== undefined) {
+          resVal = `Trend=${obs.trend} (${obs.percentage_change}%)`;
+        } else if (obs.status_code !== undefined) {
+          resVal = `Status=${obs.status_code} (${obs.summary || ""})`;
+        } else if (obs.code !== undefined && name === "coding") {
+          resVal = `Code generated (${obs.language || "python"})`;
+        } else if (obs.exitCode !== undefined && name === "execute_code") {
+          resVal = `ExitCode=${obs.exitCode}, Output=${(obs.stdout || obs.stderr || "").trim().slice(0, 100)}`;
+        } else {
+          resVal = JSON.stringify(obs).slice(0, 150);
+        }
+      } else {
+        resVal = String(obs).slice(0, 150);
+      }
+      lines.push(`  - Step (${name}): Input: ${JSON.stringify(s.input || {})} -> Result: ${resVal}`);
+    });
+    lines.push("  -> CRITICAL: The above tool outputs are ALREADY computed and stored in your task state. DO NOT repeat identical tool calls for these values. Move forward to the next calculation or final answer.");
+  }
+
   return lines.join("\n");
+}
+
+/**
+ * Deterministically classify the initial workflow with explicit task precedence.
+ *
+ * PRECEDENCE (Specific task requirements take precedence over broad semantic categories):
+ * 1. CODING_SANDBOX: Explicit request to write/generate code AND execute it.
+ * 2. DOCUMENT_ANALYSIS: Explicit uploaded document content / context attached to user message.
+ * 3. MULTI_STEP_ANALYSIS: Cross-domain multi-capability workflow (e.g. image + KB + formula + check).
+ * 4. VISION_KNOWLEDGE: Image/visual data present + organizational Knowledge Base lookup.
+ * 5. VISION_CALCULATION: Image/visual data present + numerical calculation/verification.
+ * 6. COMPLIANCE_CHECK: Specification, threshold, standard, or equipment limit comparison.
+ * 7. RETRIEVAL_CALCULATION: Knowledge Base factual lookup AND subsequent calculation/payback/differential.
+ * 8. DATA_ANALYSIS: Structured / tabular dataset or series of numbers with statistics/trend analysis.
+ * 9. ENGINEERING: Direct engineering calculation (formula or unit conversion) without code.
+ * 10. KNOWLEDGE_RETRIEVAL: Factual lookup from documentation / persistent Knowledge Base only.
+ * 11. GENERAL: Conceptual explanation, direct conversation, or fallback.
+ *
+ * @param {object} params
+ * @param {string} params.userRequest
+ * @param {Array} [params.images=[]]
+ * @param {Array} [params.conversationHistory=[]]
+ * @returns {string} One of WORKFLOW_TYPES
+ */
+export function classifyInitialWorkflow({
+  userRequest = "",
+  images = [],
+  conversationHistory = [],
+} = {}) {
+  const req = String(userRequest || "").trim();
+  const hasImages = Array.isArray(images) ? images.length > 0 : Boolean(images);
+
+  // 1. CODING_SANDBOX
+  // Must win over ENGINEERING even if an engineering formula is mentioned (e.g. Reynolds number)
+  const isCodingSandbox =
+    /\b(write|generate|create|implement|author)\b.*\b(python|script|code|program)\b.*\b(run|execute|sandbox|calculate|compute)\b/i.test(req) ||
+    /\b(execute|run)\b.*\b(python|script|code)\b/i.test(req) ||
+    /\b(write and execute|write & execute)\b.*\b(python|script|code)\b/i.test(req) ||
+    (/\b(python script|python code)\b/i.test(req) && /\b(calculate|compute|execute|run)\b/i.test(req));
+
+  if (isCodingSandbox) {
+    return WORKFLOW_TYPES.CODING_SANDBOX;
+  }
+
+  // 2. DOCUMENT_ANALYSIS
+  // Must NOT route to persistent KB when user provided document context directly
+  const hasInlineDocContext =
+    /(\[DOCUMENT CONTEXT\]|\[ATTACHED DOCUMENT\]|Document Content:|Document Excerpt:)/i.test(req) ||
+    (/\b(this uploaded|uploaded procedure|uploaded document|uploaded maintenance|uploaded inspection|attached report|attached procedure|attached document|this attached)\b/i.test(req) &&
+      !/\b(compare with knowledge base|search the knowledge base)\b/i.test(req));
+
+  if (hasInlineDocContext) {
+    return WORKFLOW_TYPES.DOCUMENT_ANALYSIS;
+  }
+
+  // 3. MULTI_STEP_ANALYSIS
+  // Genuinely complex cross-domain tasks (e.g. gauge image + KB retrieval + calculation + compliance check)
+  const isMultiStep =
+    hasImages &&
+    /\b(gauge|dial|meter|reading)\b/i.test(req) &&
+    /\b(rated|specification|manual|document|kb)\b/i.test(req) &&
+    /\b(differential|difference|calculate|formula)\b/i.test(req) &&
+    /\b(compliant|compare|specification|within|exceeds)\b/i.test(req);
+
+  if (isMultiStep) {
+    return WORKFLOW_TYPES.MULTI_STEP_ANALYSIS;
+  }
+
+  // 4. VISION_KNOWLEDGE
+  if (hasImages && /\b(document|manual|sop|kb|knowledge|policy|procedure|specification|standard)\b/i.test(req)) {
+    return WORKFLOW_TYPES.VISION_KNOWLEDGE;
+  }
+
+  // 5. VISION_CALCULATION
+  if (hasImages && /\b(calculate|computation|compute|math|sum|difference|ratio|formula|value|reading)\b/i.test(req)) {
+    return WORKFLOW_TYPES.VISION_CALCULATION;
+  }
+
+  // 6. DATA_ANALYSIS
+  // Numerical array / dataset + statistics, trend, or multi-point evaluation
+  const hasArrayLiteral = /\[\s*[\d\.\s,-]+\s*\]/.test(req);
+  const hasSeries = /(\d+\.\d+[\s,]+){3,}/.test(req);
+  const hasDatasetKeywords = /\b(dataset|measurements|readings|sensor readings|tabular|time series|sequential readings)\b/i.test(req);
+  const hasDataAnalysisIntent =
+    /\b(statistics|mean|average|median|variance|standard deviation|range|trend|trend analysis|stable trend|rate of change|extremes)\b/i.test(req) ||
+    hasArrayLiteral;
+
+  if ((hasArrayLiteral || (hasSeries && hasDatasetKeywords)) && hasDataAnalysisIntent) {
+    return WORKFLOW_TYPES.DATA_ANALYSIS;
+  }
+
+  // 7. COMPLIANCE_CHECK
+  // Checking a single measurement against an allowable limit or standard
+  const isMultiParamFormula =
+    /\b(discharge pressure\b.*\bsuction pressure|suction pressure\b.*\bdischarge pressure|inlet\b.*\boutlet)\b/i.test(req);
+
+  const isComplianceCheck =
+    !isMultiParamFormula &&
+    (/\b(is this compliant|is compliant|is it compliant|compliance check|compliant\?|does this pass|does it pass|pass the safety|safety shutdown limit|within limit|within the limit|exceeds limit|exceed the limit|acceptable limit|allowable limit|zone [a-d]|according to .* is this compliant)\b/i.test(req) ||
+    (/\b(vibration|temperature|pressure|flow)\b/i.test(req) && /\b(compliant|limit|threshold|pass|acceptable|shutdown)\b/i.test(req)));
+
+  if (isComplianceCheck) {
+    return WORKFLOW_TYPES.COMPLIANCE_CHECK;
+  }
+
+  // 8. RETRIEVAL_CALCULATION
+  // Retrieval from KB/purchase note/manual AND calculation (e.g. C-301 purchase note daily loss and days to recover)
+  const isRetrievalCalc =
+    (/\b(purchase note|note|sop|manual|document|c-301|report|invoice)\b/i.test(req) || /\b(according to|from the)\b/i.test(req)) &&
+    /\b(how many days|how long|calculate|compute|total loss|daily production loss|recover|payback|calculate\b.*\bdifference|percentage reduction|percentage change)\b/i.test(req);
+
+  if (isRetrievalCalc) {
+    return WORKFLOW_TYPES.RETRIEVAL_CALCULATION;
+  }
+
+  // 9. ENGINEERING
+  // Pure formula calculation or unit conversion without code writing
+  const isEngineering =
+    isMultiParamFormula ||
+    /\b(convert\s+\d+|unit conversion|psi to bar|bar to psi|celsius to|fahrenheit to|incompatible units)\b/i.test(req) ||
+    /\b(pressure difference|delta p|percentage difference|percentage change|percentage reduction|efficiency|electrical power|mechanical power|density|flow rate|velocity)\b/i.test(req) ||
+    (/\b(psi|bar|kpa|mpa)\b/i.test(req) && /\b(difference|convert|conversion|formula)\b/i.test(req));
+
+  if (isEngineering) {
+    return WORKFLOW_TYPES.ENGINEERING;
+  }
+
+  // 10. KNOWLEDGE_RETRIEVAL
+  // Lookup from documentation/manuals/SOPs
+  const isKnowledgeRetrieval =
+    /\b(sop|manual|manuals|policy|policies|procedure|procedures|prv|cdu|p-204|e-204|c-301|eng-pmp|saf-pmp|ppe|overhaul|inspection frequency|set pressure|maintenance procedure|document|kb|knowledge base)\b/i.test(req) ||
+    /\b(according to|what is the set pressure|what is the motor power|overhaul period)\b/i.test(req);
+
+  if (isKnowledgeRetrieval) {
+    return WORKFLOW_TYPES.KNOWLEDGE_RETRIEVAL;
+  }
+
+  // 11. GENERAL
+  return WORKFLOW_TYPES.GENERAL;
 }
 
 /**
@@ -379,9 +573,10 @@ export function formatReasoningState(state = {}) {
  * Strips thinking tokens (<think>), markdown fences, and isolates the JSON object.
  *
  * @param {string} rawOutput
+ * @param {string} [initialWorkflow=null] - Pre-classified primary workflow
  * @returns {{ valid: boolean, decision?: object, error?: string, raw?: string }}
  */
-export function parseBrainOutput(rawOutput) {
+export function parseBrainOutput(rawOutput, initialWorkflow = null) {
   if (!rawOutput || typeof rawOutput !== "string") {
     return { valid: false, error: "Empty or non-string output received from model.", raw: rawOutput };
   }
@@ -444,6 +639,37 @@ export function parseBrainOutput(rawOutput) {
       ? parsed.workflow.trim().toLowerCase()
       : null;
 
+  // Enforce precedence: If an initial workflow with higher specificity exists (e.g. CODING_SANDBOX, COMPLIANCE_CHECK, RETRIEVAL_CALCULATION, DOCUMENT_ANALYSIS)
+  // and parsed.workflow slipped into a generic bucket (e.g. "engineering" for coding, or "knowledge_retrieval" for compliance/calculation),
+  // preserve the specific initial workflow!
+  if (initialWorkflow && initialWorkflow !== WORKFLOW_TYPES.GENERAL) {
+    const isSpecificInitial = [
+      WORKFLOW_TYPES.CODING_SANDBOX,
+      WORKFLOW_TYPES.DOCUMENT_ANALYSIS,
+      WORKFLOW_TYPES.MULTI_STEP_ANALYSIS,
+      WORKFLOW_TYPES.VISION_KNOWLEDGE,
+      WORKFLOW_TYPES.VISION_CALCULATION,
+      WORKFLOW_TYPES.COMPLIANCE_CHECK,
+      WORKFLOW_TYPES.RETRIEVAL_CALCULATION,
+      WORKFLOW_TYPES.DATA_ANALYSIS,
+      WORKFLOW_TYPES.ENGINEERING,
+    ].includes(initialWorkflow);
+
+    if (isSpecificInitial) {
+      if (!workflowType || workflowType === WORKFLOW_TYPES.GENERAL) {
+        workflowType = initialWorkflow;
+      } else if (initialWorkflow === WORKFLOW_TYPES.CODING_SANDBOX && workflowType === WORKFLOW_TYPES.ENGINEERING) {
+        workflowType = WORKFLOW_TYPES.CODING_SANDBOX;
+      } else if (initialWorkflow === WORKFLOW_TYPES.COMPLIANCE_CHECK && workflowType === WORKFLOW_TYPES.KNOWLEDGE_RETRIEVAL) {
+        workflowType = WORKFLOW_TYPES.COMPLIANCE_CHECK;
+      } else if (initialWorkflow === WORKFLOW_TYPES.RETRIEVAL_CALCULATION && workflowType === WORKFLOW_TYPES.KNOWLEDGE_RETRIEVAL) {
+        workflowType = WORKFLOW_TYPES.RETRIEVAL_CALCULATION;
+      } else if (initialWorkflow === WORKFLOW_TYPES.DOCUMENT_ANALYSIS && workflowType === WORKFLOW_TYPES.KNOWLEDGE_RETRIEVAL) {
+        workflowType = WORKFLOW_TYPES.DOCUMENT_ANALYSIS;
+      }
+    }
+  }
+
   // Handle TOOL action
   if (action === "tool") {
     const toolName = parsed.tool || parsed.toolName;
@@ -462,13 +688,25 @@ export function parseBrainOutput(rawOutput) {
         : `Executing tool: ${toolName.trim()}`;
 
     if (!workflowType) {
-      const cleanTool = toolName.trim().toLowerCase();
-      if (cleanTool === "coding" || cleanTool === "execute_code") {
-        workflowType = WORKFLOW_TYPES.CODING_SANDBOX;
-      } else if (cleanTool === "retrieve_information") {
-        workflowType = WORKFLOW_TYPES.KNOWLEDGE_RETRIEVAL;
+      if (initialWorkflow && initialWorkflow !== WORKFLOW_TYPES.GENERAL) {
+        workflowType = initialWorkflow;
       } else {
-        workflowType = WORKFLOW_TYPES.GENERAL;
+        const cleanTool = toolName.trim().toLowerCase();
+        if (cleanTool === "coding" || cleanTool === "execute_code") {
+          workflowType = WORKFLOW_TYPES.CODING_SANDBOX;
+        } else if (cleanTool === "retrieve_information") {
+          workflowType = WORKFLOW_TYPES.KNOWLEDGE_RETRIEVAL;
+        } else if (cleanTool === "vision") {
+          workflowType = WORKFLOW_TYPES.VISION_CALCULATION;
+        } else if (cleanTool === "threshold_check") {
+          workflowType = WORKFLOW_TYPES.COMPLIANCE_CHECK;
+        } else if (cleanTool === "statistics" || cleanTool === "trend_analysis") {
+          workflowType = WORKFLOW_TYPES.DATA_ANALYSIS;
+        } else if (cleanTool === "engineering_formula" || cleanTool === "unit_conversion") {
+          workflowType = WORKFLOW_TYPES.ENGINEERING;
+        } else {
+          workflowType = WORKFLOW_TYPES.GENERAL;
+        }
       }
     }
 
@@ -540,14 +778,33 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
       userRequest
     );
 
+  const hasInlineDocumentContext =
+    /(\[DOCUMENT CONTEXT\]|\[ATTACHED DOCUMENT\]|Document Content:|Document Excerpt:)/i.test(userRequest);
+
   const isDocumentQuestion =
     !hasExplicitCodeGenerationIntent &&
+    !hasInlineDocumentContext &&
     /\b(document|documents|file|files|pdf|sop|manual|manuals|policy|policies|procedure|procedures|regulation|regulations|safety requirement|safety requirements|prv|cdu|crude distillation|valve|inspection interval|acceptance criteria|report|reports|inspection|equipment|pump|discharge|suction|pressure|flow rate|temperature|transmitter)\b/i.test(
       userRequest
     );
 
+  const hasExplicitEngineeringIntent =
+    /\b(formula|pressure difference|pressure diff|delta p|percentage difference|percentage change|efficiency|power|density|flow rate|velocity|kinetic energy|potential energy|convert|conversion|psi to bar|bar to psi|celsius|fahrenheit|threshold|limit check|exceeds limit|is within limit|statistics|mean|median|variance|standard deviation|trend|trend analysis)\b/i.test(
+      userRequest
+    );
+
+  const hasExplicitDataAnalysisIntent =
+    /\b(data|dataset|measurements|readings|sensor readings|tabular|csv|spreadsheet|values|statistics|mean|average|median|variance|standard deviation|trend|highest|lowest)\b/i.test(
+      userRequest
+    );
+
+  const isDirectCalculationWithNumbers =
+    (hasExplicitEngineeringIntent || hasExplicitDataAnalysisIntent) &&
+    /\d+/.test(userRequest) &&
+    !/\b(according to|sop|manual|manuals|policy|policies|guideline|guidelines|procedure|procedures|regulation|regulations|safety requirement|safety requirements|prv|cdu|crude distillation|acceptance criteria|report|reports|standard|standards)\b/i.test(userRequest);
+
   // 1. DOCUMENT / RETRIEVAL POLICY:
-  if (steps.length === 0 && isDocumentQuestion && (toolName === "calculator" || toolName === "text_transform" || toolName === "coding")) {
+  if (steps.length === 0 && isDocumentQuestion && !isDirectCalculationWithNumbers && (toolName === "calculator" || toolName === "text_transform" || toolName === "coding")) {
     return {
       valid: false,
       reason: `For document queries, retrieve_information must be used first to gather context before calling other tools.`,
@@ -557,7 +814,7 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
   // 2. TEXT TRANSFORM POLICY:
   if (toolName === "text_transform") {
     const hasExplicitTransformRequest =
-      /\b(uppercase|upper case|lowercase|lower case|capital|all caps|capitalize|word count|count words|count\s+(?:the\s+)?words|character count|char count|count characters|count\s+(?:the\s+)?characters|reverse text|reverse string|reverse the|trim whitespace|trim text)\b/i.test(
+      /\b(uppercase|upper case|lowercase|lower case|capital|all caps|capitalize|word count|count words|count\s+(?:the\s+)?words|character count|char count|count characters|count\s+(?:the\s+)?characters|reverse text|reverse string|reverse the|trim whitespace|trim text|summarize|summary)\b/i.test(
         userRequest
       );
 
@@ -764,6 +1021,69 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
     }
   }
 
+  // 8. ENGINEERING FORMULA POLICY GUARD:
+  if (toolName === "engineering_formula") {
+    const rawFormula = String(decision.input?.formula || "").trim().toLowerCase().replace(/[\s\-]+/g, "_");
+    if (!rawFormula) {
+      return {
+        valid: false,
+        reason: "engineering_formula requires a valid 'formula' name (e.g. 'pressure_difference', 'percentage_difference', 'percentage_change', 'efficiency', 'electrical_power', 'mechanical_power', 'density', 'flow_rate', 'velocity', 'kinetic_energy', 'potential_energy').",
+      };
+    }
+  }
+
+  // 9. UNIT CONVERSION POLICY GUARD:
+  if (toolName === "unit_conversion") {
+    const fromUnit = decision.input?.from_unit || decision.input?.fromUnit || decision.input?.from;
+    const toUnit = decision.input?.to_unit || decision.input?.toUnit || decision.input?.to;
+    if (!fromUnit || !toUnit) {
+      return {
+        valid: false,
+        reason: "unit_conversion requires both 'from_unit' and 'to_unit' parameters.",
+      };
+    }
+  }
+
+  // 10. THRESHOLD CHECK POLICY GUARD:
+  if (toolName === "threshold_check") {
+    const val = decision.input?.value !== undefined ? decision.input?.value : decision.input?.val;
+    const lim = decision.input?.limit !== undefined ? decision.input?.limit : decision.input?.threshold;
+    if (val === undefined || Number.isNaN(Number(val))) {
+      return {
+        valid: false,
+        reason: "threshold_check requires a numeric 'value' to check.",
+      };
+    }
+    if (lim === undefined || Number.isNaN(Number(lim))) {
+      return {
+        valid: false,
+        reason: "threshold_check requires a numeric 'limit' threshold. If the limit is unknown, retrieve it from the Knowledge Base or report it as unavailable; never invent safety limits.",
+      };
+    }
+  }
+
+  // 11. STATISTICS POLICY GUARD:
+  if (toolName === "statistics") {
+    const vals = decision.input?.values || decision.input?.data;
+    if (!Array.isArray(vals) || vals.length === 0) {
+      return {
+        valid: false,
+        reason: "statistics tool requires a non-empty 'values' array.",
+      };
+    }
+  }
+
+  // 12. TREND ANALYSIS POLICY GUARD:
+  if (toolName === "trend_analysis") {
+    const vals = decision.input?.values || decision.input?.data || decision.input?.series;
+    if (!Array.isArray(vals) || vals.length < 2) {
+      return {
+        valid: false,
+        reason: "trend_analysis tool requires an array of at least 2 sequential numerical values.",
+      };
+    }
+  }
+
   return { valid: true };
 }
 
@@ -774,6 +1094,7 @@ export default {
   formatStepHistory,
   formatAccumulatedEvidence,
   formatReasoningState,
+  classifyInitialWorkflow,
   parseBrainOutput,
   validateToolSelectionPolicy,
 };
