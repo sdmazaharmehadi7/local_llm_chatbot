@@ -186,8 +186,8 @@ const KnowledgeBase = () => {
   );
 
   return (
-    <div className="bg-theme-canvas min-h-screen p-6 md:p-10">
-      <div className="mx-auto max-w-5xl space-y-6">
+    <div className="bg-theme-canvas h-full flex-1 overflow-y-auto p-6 md:p-10">
+      <div className="mx-auto max-w-5xl space-y-6 pb-12">
         {/* Header */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
