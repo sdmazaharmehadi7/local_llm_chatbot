@@ -19,6 +19,7 @@
 import assert from "assert";
 import {
   CalculatorSchema,
+  UnitConverterSchema,
   TextTransformSchema,
   RetrievalSchema,
   CodingSchema,
@@ -64,6 +65,22 @@ async function runTests() {
 
     const invalidCalc = CalculatorSchema.safeParse({ expression: "" });
     assert.strictEqual(invalidCalc.success, false);
+
+    // Unit Converter validation
+    const validUnitConv = UnitConverterSchema.safeParse({
+      value: 5.4,
+      fromUnit: "bar",
+      toUnit: "psi",
+    });
+    assert.strictEqual(validUnitConv.success, true);
+    assert.strictEqual(validUnitConv.data.value, 5.4);
+
+    const invalidUnitConv = UnitConverterSchema.safeParse({
+      value: 5.4,
+      fromUnit: "",
+      toUnit: "psi",
+    });
+    assert.strictEqual(invalidUnitConv.success, false);
 
     // Text transform validation
     const validTransform = TextTransformSchema.safeParse({
@@ -142,16 +159,27 @@ async function runTests() {
     const textTool = tools.find((t) => t.name === "text_transform");
     const retrTool = tools.find((t) => t.name === "retrieve_information");
     const codeTool = tools.find((t) => t.name === "coding");
+    const unitTool = tools.find((t) => t.name === "unit_converter");
 
     assert.ok(calcTool, "calculator tool exists");
     assert.ok(textTool, "text_transform tool exists");
     assert.ok(retrTool, "retrieve_information tool exists");
     assert.ok(codeTool, "coding tool exists");
+    assert.ok(unitTool, "unit_converter tool exists");
 
     // Execute calculator tool
     const calcOutput = JSON.parse(await calcTool.invoke({ expression: "25 * 40" }));
     assert.strictEqual(calcOutput.value, 1000);
     assert.strictEqual(calcOutput.formatted, "1000");
+
+    // Execute unit converter tool
+    const unitOutput = JSON.parse(
+      await unitTool.invoke({ value: 5.4, fromUnit: "bar", toUnit: "psi" })
+    );
+    assert.strictEqual(unitOutput.success, true);
+    assert.strictEqual(unitOutput.result, 78.320378);
+    assert.strictEqual(unitOutput.formatted, "78.320378 psi");
+    assert.strictEqual(unitOutput.category, "pressure");
 
     // Execute text transform tool
     const textOutput = JSON.parse(
@@ -200,9 +228,10 @@ async function runTests() {
   console.log("\n--- [Section 3] Tool Catalog Metadata ---");
   {
     const metadata = getAgentToolsMetadata();
-    assert.strictEqual(metadata.length, 6);
+    assert.strictEqual(metadata.length, 7);
     const names = metadata.map((m) => m.name);
     assert.ok(names.includes("calculator"));
+    assert.ok(names.includes("unit_converter"));
     assert.ok(names.includes("text_transform"));
     assert.ok(names.includes("retrieve_information"));
     assert.ok(names.includes("coding"));
@@ -215,7 +244,7 @@ async function runTests() {
     const invalidVision = VisionSchema.safeParse({ prompt: "" });
     assert.strictEqual(invalidVision.success, false);
 
-    pass("Tool metadata catalog lists all 6 registered tools with schema specifications");
+    pass("Tool metadata catalog lists all 7 registered tools with schema specifications");
   }
 
   // ─── 4. TOOL SELECTION POLICY TESTS (TESTS 1 to 6) ─────────────────────────
@@ -988,7 +1017,7 @@ async function runTests() {
     await listAgentTools({}, mockToolsRes);
     assert.strictEqual(toolsBody.success, true);
     assert.strictEqual(toolsBody.framework, "langgraph");
-    assert.strictEqual(toolsBody.count, 6);
+    assert.strictEqual(toolsBody.count, 7);
 
     // Get task status test
     let taskBody = null;
@@ -1001,7 +1030,7 @@ async function runTests() {
     assert.strictEqual(taskBody.success, true);
     assert.strictEqual(taskBody.taskId, "task-test-id");
 
-    pass("Agent controller properly validates inputs, lists all 4 tools, and returns task status");
+    pass("Agent controller properly validates inputs, lists all 7 tools, and returns task status");
   }
 
   // ─── 7. KNOWLEDGE BASE MULTI-STEP RAG VS ATTACHMENT PARITY (FINAL VALIDATION) ───
@@ -1210,6 +1239,370 @@ async function runTests() {
     assert.ok(joinedStream.includes("PASS"));
 
     pass("TEST 7.2 passed: Final Agent response streams correctly to onChunk while preserving multi-step RAG tools");
+  }
+
+  // ─── 8. COMPREHENSIVE TOOL SELECTION & MULTI-TOOL POLICY (CANONICAL EXAMPLES 1-7) ───
+  console.log("\n--- [Section 8] Multi-Tool Policy & Canonical Examples 1 to 7 Acceptance Tests ---");
+
+  // TEST 8.1 (Example 1: "Calculate 25 × 4" → Calculator only)
+  {
+    let brainCalled = 0;
+    agentGraphService.setAgentBrainLlmClient(async () => {
+      brainCalled++;
+      if (brainCalled === 1) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "calculator",
+          reason: "Calculate arithmetic multiplication 25 * 4.",
+          input: { expression: "25 * 4" },
+        });
+      }
+      return JSON.stringify({
+        action: "final",
+        reason: "Arithmetic calculation complete.",
+        answer: "The result of 25 × 4 is 100.",
+      });
+    });
+
+    const result = await runAgentTask({
+      message: "Calculate 25 * 4.",
+      userId: "test-user-ex1",
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.steps.length, 1);
+    assert.strictEqual(result.steps[0].toolName, "calculator");
+    assert.strictEqual(result.steps[0].observation.value, 100);
+    assert.ok(result.response.includes("100"));
+
+    pass("TEST 8.1 passed: Canonical Example 1 ('Calculate 25 × 4') routes to Calculator only");
+  }
+
+  // TEST 8.2 (Example 2: "Convert 100 psi to bar" → Unit Converter only)
+  {
+    let brainCalled = 0;
+    agentGraphService.setAgentBrainLlmClient(async () => {
+      brainCalled++;
+      if (brainCalled === 1) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "unit_converter",
+          reason: "Convert 100 psi pressure to bar.",
+          input: { value: 100, fromUnit: "psi", toUnit: "bar" },
+        });
+      }
+      return JSON.stringify({
+        action: "final",
+        reason: "Unit conversion completed.",
+        answer: "100 psi converts to 6.894757 bar.",
+      });
+    });
+
+    const result = await runAgentTask({
+      message: "Convert 100 psi to bar.",
+      userId: "test-user-ex2",
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.steps.length, 1);
+    assert.strictEqual(result.steps[0].toolName, "unit_converter");
+    assert.strictEqual(result.steps[0].observation.result, 6.894757);
+    assert.ok(result.response.includes("6.894757 bar"));
+
+    pass("TEST 8.2 passed: Canonical Example 2 ('Convert 100 psi to bar') routes to Unit Converter only");
+  }
+
+  // TEST 8.3 (Example 3: "What is the suction pressure of P-204?" → Retrieval only)
+  {
+    let brainCalled = 0;
+    const mockRetriever = async () => ({
+      success: true,
+      content: "Pump P-204 technical specs: Suction pressure is 1.8 bar, Discharge pressure is 7.2 bar.",
+      results: [{ filename: "Pump_P204_Specs.pdf", page: 1, text: "Suction pressure is 1.8 bar." }],
+    });
+
+    agentGraphService.setAgentBrainLlmClient(async () => {
+      brainCalled++;
+      if (brainCalled === 1) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "retrieve_information",
+          reason: "Retrieve suction pressure specification for pump P-204.",
+          input: { query: "P-204 suction pressure" },
+        });
+      }
+      return JSON.stringify({
+        action: "final",
+        reason: "Factual suction pressure retrieved.",
+        answer: "According to the equipment specifications, the suction pressure of pump P-204 is 1.8 bar.",
+      });
+    });
+
+    const result = await runAgentTask({
+      message: "What is the suction pressure of P-204?",
+      userId: "test-user-ex3",
+      options: { retriever: mockRetriever },
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.steps.length, 1);
+    assert.strictEqual(result.steps[0].toolName, "retrieve_information");
+    assert.ok(result.response.includes("1.8 bar"));
+
+    pass("TEST 8.3 passed: Canonical Example 3 ('What is the suction pressure of P-204?') routes to Retrieval only");
+  }
+
+  // TEST 8.4 (Example 4: "What is the pressure differential of P-204?" → Retrieval → Calculator)
+  {
+    let brainCalled = 0;
+    const mockRetriever = async () => ({
+      success: true,
+      content: "Pump P-204 Inspection: Suction pressure = 1.8 bar. Discharge pressure = 7.2 bar.",
+      results: [{ filename: "P204_Report.pdf", page: 2, text: "Suction pressure = 1.8 bar. Discharge pressure = 7.2 bar." }],
+    });
+
+    agentGraphService.setAgentBrainLlmClient(async () => {
+      brainCalled++;
+      if (brainCalled === 1) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "retrieve_information",
+          reason: "Retrieve suction and discharge pressures for P-204.",
+          input: { query: "P-204 suction and discharge pressure" },
+        });
+      }
+      if (brainCalled === 2) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "calculator",
+          reason: "Calculate differential: discharge pressure (7.2 bar) minus suction pressure (1.8 bar).",
+          input: { expression: "7.2 - 1.8" },
+        });
+      }
+      return JSON.stringify({
+        action: "final",
+        reason: "Pressure differential calculation complete.",
+        answer: "Based on the inspection document (P204_Report.pdf), suction pressure is 1.8 bar and discharge pressure is 7.2 bar. The pressure differential is 5.4 bar (7.2 - 1.8).",
+      });
+    });
+
+    const result = await runAgentTask({
+      message: "What is the pressure differential of P-204?",
+      userId: "test-user-ex4",
+      options: { retriever: mockRetriever },
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.steps.length, 2);
+    assert.strictEqual(result.steps[0].toolName, "retrieve_information");
+    assert.strictEqual(result.steps[1].toolName, "calculator");
+    assert.strictEqual(result.steps[1].observation.value, 5.4);
+    assert.ok(result.response.includes("5.4 bar"));
+
+    pass("TEST 8.4 passed: Canonical Example 4 ('What is the pressure differential of P-204?') routes Retrieval → Calculator");
+  }
+
+  // TEST 8.5 (Example 5: "What is the discharge pressure of P-204 in psi?" → Retrieval → Unit Converter)
+  {
+    let brainCalled = 0;
+    const mockRetriever = async () => ({
+      success: true,
+      content: "Pump P-204: Discharge pressure = 7.2 bar.",
+      results: [{ filename: "P204_Report.pdf", page: 2, text: "Discharge pressure = 7.2 bar." }],
+    });
+
+    agentGraphService.setAgentBrainLlmClient(async () => {
+      brainCalled++;
+      if (brainCalled === 1) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "retrieve_information",
+          reason: "Retrieve discharge pressure of pump P-204.",
+          input: { query: "P-204 discharge pressure" },
+        });
+      }
+      if (brainCalled === 2) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "unit_converter",
+          reason: "Convert discharge pressure 7.2 bar to psi.",
+          input: { value: 7.2, fromUnit: "bar", toUnit: "psi" },
+        });
+      }
+      return JSON.stringify({
+        action: "final",
+        reason: "Unit conversion complete.",
+        answer: "According to the pump document, the discharge pressure of P-204 is 7.2 bar, which is 104.427171 psi.",
+      });
+    });
+
+    const result = await runAgentTask({
+      message: "What is the discharge pressure of P-204 in psi?",
+      userId: "test-user-ex5",
+      options: { retriever: mockRetriever },
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.steps.length, 2);
+    assert.strictEqual(result.steps[0].toolName, "retrieve_information");
+    assert.strictEqual(result.steps[1].toolName, "unit_converter");
+    assert.strictEqual(result.steps[1].observation.result, 104.427171);
+    assert.ok(result.response.includes("104.427171 psi"));
+
+    pass("TEST 8.5 passed: Canonical Example 5 ('What is the discharge pressure of P-204 in psi?') routes Retrieval → Unit Converter");
+  }
+
+  // TEST 8.6 (Example 6: "Calculate the pressure differential of P-204 and give the result in psi." → Retrieval → Calculator → Unit Converter)
+  {
+    let brainCalled = 0;
+    const mockRetriever = async () => ({
+      success: true,
+      content: "Pump P-204 inspection: Suction = 1.8 bar, Discharge = 7.2 bar.",
+      results: [{ filename: "P204_Inspection.pdf", page: 1, text: "Suction = 1.8 bar, Discharge = 7.2 bar." }],
+    });
+
+    agentGraphService.setAgentBrainLlmClient(async () => {
+      brainCalled++;
+      if (brainCalled === 1) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "retrieve_information",
+          reason: "Retrieve suction and discharge pressure for pump P-204.",
+          input: { query: "P-204 suction and discharge pressure" },
+        });
+      }
+      if (brainCalled === 2) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "calculator",
+          reason: "Calculate differential: 7.2 - 1.8.",
+          input: { expression: "7.2 - 1.8" },
+        });
+      }
+      if (brainCalled === 3) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "unit_converter",
+          reason: "Convert calculated differential 5.4 bar to psi.",
+          input: { value: 5.4, fromUnit: "bar", toUnit: "psi" },
+        });
+      }
+      return JSON.stringify({
+        action: "final",
+        reason: "Retrieval, calculation, and unit conversion all complete.",
+        answer: "For pump P-204, the retrieved suction pressure is 1.8 bar and discharge pressure is 7.2 bar. The calculated differential is 5.4 bar (7.2 - 1.8), which converts to 78.320378 psi.",
+      });
+    });
+
+    const result = await runAgentTask({
+      message: "Calculate the pressure differential of P-204 and give the result in psi.",
+      userId: "test-user-ex6",
+      options: { retriever: mockRetriever },
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.steps.length, 3);
+    assert.strictEqual(result.steps[0].toolName, "retrieve_information");
+    assert.strictEqual(result.steps[1].toolName, "calculator");
+    assert.strictEqual(result.steps[1].observation.value, 5.4);
+    assert.strictEqual(result.steps[2].toolName, "unit_converter");
+    assert.strictEqual(result.steps[2].observation.result, 78.320378);
+    assert.ok(result.response.includes("78.320378 psi"));
+
+    pass("TEST 8.6 passed: Canonical Example 6 ('Calculate differential of P-204 in psi') routes Retrieval → Calculator → Unit Converter");
+  }
+
+  // TEST 8.7 (Example 7: "Read the pressure values from this image, calculate the differential, and convert it to psi." → Vision → Calculator → Unit Converter)
+  {
+    let brainCalled = 0;
+    const mockVisionClient = async () =>
+      "Image Inspection: The pressure gauges display Discharge pressure = 8 bar and Suction pressure = 2 bar.";
+
+    agentGraphService.setAgentBrainLlmClient(async () => {
+      brainCalled++;
+      if (brainCalled === 1) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "vision",
+          reason: "Extract suction and discharge pressure values from the gauge image.",
+          input: { prompt: "Read the suction and discharge pressure readings from the gauges." },
+        });
+      }
+      if (brainCalled === 2) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "calculator",
+          reason: "Calculate differential: 8 - 2.",
+          input: { expression: "8 - 2" },
+        });
+      }
+      if (brainCalled === 3) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "unit_converter",
+          reason: "Convert calculated differential 6 bar to psi.",
+          input: { value: 6, fromUnit: "bar", toUnit: "psi" },
+        });
+      }
+      return JSON.stringify({
+        action: "final",
+        reason: "Vision inspection, arithmetic calculation, and unit conversion all complete.",
+        answer: "From the image, discharge pressure is 8 bar and suction pressure is 2 bar. The calculated pressure differential is 6 bar (8 - 2), which converts to 87.022643 psi.",
+      });
+    });
+
+    const result = await runAgentTask({
+      message: "Read the pressure values from this image, calculate the differential, and convert it to psi.",
+      userId: "test-user-ex7",
+      images: ["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="],
+      options: { visionClient: mockVisionClient },
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.steps.length, 3);
+    assert.strictEqual(result.steps[0].toolName, "vision");
+    assert.strictEqual(result.steps[1].toolName, "calculator");
+    assert.strictEqual(result.steps[1].observation.value, 6);
+    assert.strictEqual(result.steps[2].toolName, "unit_converter");
+    assert.strictEqual(result.steps[2].observation.result, 87.022643);
+    assert.ok(result.response.includes("87.022643 psi"));
+
+    pass("TEST 8.7 passed: Canonical Example 7 ('Vision → Calculator → Unit Converter') extracts visual values, calculates arithmetic, and converts units");
+  }
+
+  // TEST 8.8 (Section 11 & 13: Tool Output Trust & Policy Enforcement for Simple Operations)
+  {
+    let brainCalled = 0;
+    agentGraphService.setAgentBrainLlmClient(async () => {
+      brainCalled++;
+      if (brainCalled === 1) {
+        // Enforce calculator even for simple arithmetic 120 * 3
+        return JSON.stringify({
+          action: "tool",
+          tool: "calculator",
+          reason: "Calculate total flow volume: flow rate 120 m3/h * operating time 3 h.",
+          input: { expression: "120 * 3" },
+        });
+      }
+      return JSON.stringify({
+        action: "final",
+        reason: "Use authoritative calculator result.",
+        answer: "Total flow volume calculated by tool: 360 m3.",
+      });
+    });
+
+    const result = await runAgentTask({
+      message: "Flow is 120 m3/h and operating time is 3 h. Calculate total flow.",
+      userId: "test-user-ex8",
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.steps.length, 1);
+    assert.strictEqual(result.steps[0].toolName, "calculator");
+    assert.strictEqual(result.steps[0].observation.value, 360);
+    assert.ok(result.response.includes("360 m3"));
+
+    pass("TEST 8.8 passed: Simple operations strictly invoke specialized tools (zero mental math) and trust authoritative tool outputs");
   }
 
   agentGraphService.resetAgentBrainLlmClient();

@@ -23,6 +23,7 @@ import retrievalTool from "./tools/retrieval.tool.js";
 import codingTool from "./tools/coding.tool.js";
 import executeCodeTool from "./tools/executeCode.tool.js";
 import visionTool from "./tools/vision.tool.js";
+import unitConverterTool from "./tools/unitConverter.tool.js";
 
 /**
  * Zod schema for calculator tool
@@ -32,6 +33,23 @@ export const CalculatorSchema = z.object({
     .string()
     .min(1, "Expression must not be empty")
     .describe("The mathematical expression to evaluate (e.g. '25 * 40', '10 * 0.07', 'sqrt(144) + 10')"),
+});
+
+/**
+ * Zod schema for unit converter tool
+ */
+export const UnitConverterSchema = z.object({
+  value: z
+    .union([z.number(), z.string()])
+    .describe("The numerical value to convert (e.g. 5.4, 100, 25.5)."),
+  fromUnit: z
+    .string()
+    .min(1, "Source unit must not be empty")
+    .describe("The source unit symbol (e.g. 'bar', 'psi', 'kPa', 'C', 'F', 'm3/h', 'kW')."),
+  toUnit: z
+    .string()
+    .min(1, "Target unit must not be empty")
+    .describe("The target unit symbol (e.g. 'psi', 'bar', 'MPa', 'K', 'L/min', 'hp')."),
 });
 
 /**
@@ -219,7 +237,18 @@ export function createAgentTools(context = {}) {
     },
   });
 
-  return [calcTool, textTool, retrieveTool, codeTool, execTool, visTool];
+  const converterTool = new DynamicStructuredTool({
+    name: "unit_converter",
+    description:
+      "Converts physical measurements from one unit to another (pressure: bar, kPa, MPa, psi, atm; temperature: °C, °F, K; length: mm, cm, m, km, inch, ft; flow: m3/h, L/min, L/s, gpm; mass: kg, g, tonne, lb; volume: L, m3, gallon; energy: J, kJ, kWh; power: W, kW, hp; speed: m/s, km/h, rpm; time: s, min, h). Use whenever unit conversion is required. Never convert units mentally.",
+    schema: UnitConverterSchema,
+    func: async (input) => {
+      const res = await unitConverterTool.execute(input);
+      return JSON.stringify(res);
+    },
+  });
+
+  return [calcTool, textTool, retrieveTool, codeTool, execTool, visTool, converterTool];
 }
 
 /**
@@ -260,6 +289,7 @@ export function getAgentToolsMetadata() {
 
 export default {
   CalculatorSchema,
+  UnitConverterSchema,
   TextTransformSchema,
   RetrievalSchema,
   CodingSchema,

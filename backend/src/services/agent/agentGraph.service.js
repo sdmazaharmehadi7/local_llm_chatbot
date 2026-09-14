@@ -54,6 +54,12 @@ export function normalizeActionFingerprint(toolName, input = {}) {
     const rawExpr = String(input?.expression || "").replace(/\s+/g, "").toLowerCase();
     return `${normTool}:::expr=${rawExpr}`;
   }
+  if (normTool === "unit_converter") {
+    const val = String(input?.value || "").trim();
+    const from = String(input?.fromUnit || input?.from || "").trim().toLowerCase();
+    const to = String(input?.toUnit || input?.to || "").trim().toLowerCase();
+    return `${normTool}:::val=${val}:::from=${from}:::to=${to}`;
+  }
   if (normTool === "text_transform") {
     const op = String(input?.operation || "").trim().toLowerCase();
     const text = String(input?.text || "").trim();
@@ -492,6 +498,8 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         toolDetail = `/ Instruction: ${decision.input?.prompt || "Visual inspection"}`;
       } else if (toolName === "calculator") {
         toolDetail = `/ Expression: ${decision.input?.expression || ""}`;
+      } else if (toolName === "unit_converter") {
+        toolDetail = `/ Conversion: ${decision.input?.value} ${decision.input?.fromUnit} -> ${decision.input?.toUnit}`;
       } else if (toolName === "retrieve_information") {
         toolDetail = `/ Query: ${decision.input?.query || ""}`;
       } else if (toolName === "coding") {
@@ -512,6 +520,8 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           console.log(`Query: ${decision.input.query}`);
         } else if (toolName === "calculator" && decision.input.expression) {
           console.log(`Expression: ${decision.input.expression}`);
+        } else if (toolName === "unit_converter") {
+          console.log(`Conversion: ${decision.input.value} ${decision.input.fromUnit} -> ${decision.input.toUnit}`);
         } else if (toolName === "coding" && decision.input.task) {
           console.log(`Task: ${decision.input.task}`);
         } else if (toolName === "execute_code") {
@@ -528,6 +538,8 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           ? "🔧 Searching knowledge base..."
           : toolName === "calculator"
           ? "🔧 Calling calculator..."
+          : toolName === "unit_converter"
+          ? "🔧 Converting physical units..."
           : toolName === "text_transform"
           ? "🔧 Transforming text..."
           : toolName === "coding"
@@ -598,6 +610,9 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           if (toolName === "calculator") {
             const val = parsedResult?.value !== undefined ? parsedResult.value : (parsedResult?.formatted || parsedResult);
             console.log(val);
+          } else if (toolName === "unit_converter") {
+            const formula = parsedResult?.conversionFormula || parsedResult?.formatted || JSON.stringify(parsedResult);
+            console.log(formula);
           } else if (toolName === "retrieve_information") {
             if (parsedResult?.content) {
               const firstLine = parsedResult.content.split("\n").filter(Boolean)[0] || parsedResult.content;
@@ -628,6 +643,8 @@ Return ONLY a valid JSON object matching the Response Schema.`;
               ? "✓ Knowledge retrieved"
               : toolName === "calculator"
               ? "✓ Calculation completed"
+              : toolName === "unit_converter"
+              ? "✓ Unit converted"
               : toolName === "text_transform"
               ? "✓ Text transformed"
               : toolName === "coding"

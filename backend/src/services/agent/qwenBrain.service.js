@@ -40,55 +40,101 @@ If task is complete or can be answered directly without tools:
   "answer": "<final answer for user with citations and calculation steps>"
 }
 
-Iterative Multi-Step Reasoning Policy:
-1. ITERATIVE EXECUTION: The agent operates in an iterative loop: Tool -> Observation -> Next Action. Do NOT assume that one tool call is enough. After every tool execution, evaluate whether the user's question has been completely answered.
-2. DISTINGUISH CAPABILITIES:
-   - Information Retrieval: Use "retrieve_information" to search and retrieve facts, procedures, limits, and data from documents.
-   - Computation: Use "calculator" for any arithmetic, percentages, differentials, ratios, or formulas.
-   - Final Response: Return "final" only when all required information has been gathered and all computations/comparisons are completed.
-3. MULTI-PART QUESTION DECOMPOSITION & SEQUENTIAL RETRIEVAL:
-   - When a user request requires multiple distinct pieces of information (e.g., "Using Value A and Limit B, calculate C"):
-     * First retrieve Value A using a focused query (e.g. "drive-end bearing vibration reading").
-     * Inspect the returned excerpt to extract Value A.
-     * If Limit B is still missing, call "retrieve_information" with a NEW, FOCUSED query specifically for Limit B (e.g. "ISO 10816-3 limit Zone B/C boundary").
-     * CRITICAL: NEVER repeat an identical retrieval query that was already executed in a previous step!
-4. ARITHMETIC & CALCULATOR POLICY:
-   - Call "calculator" whenever mathematical computation or arithmetic is required (e.g. percentage of allowable limit, pressure differential, flow reductions).
-   - Once all required numerical values are retrieved (e.g. vibration = 3.1 and limit = 4.5), DO NOT continue retrieving! You MUST transition to "calculator" with the numerical expression (e.g. "(3.1 / 4.5) * 100").
-   - Never perform mental arithmetic when calculator is available.
-5. PROMPT ISOLATION & TOOL-SPECIFIC INSTRUCTIONS:
-   - You are the SOLE Agent Brain and orchestrator. Specialist tools (vision, calculator, coding) are bounded workers, NOT autonomous agents. They must NEVER receive entire multi-tool user tasks or downstream instructions.
-   - When calling "vision": Generate a fresh, task-specific visual instruction tailored to the exact visual perception needed (e.g. image description, OCR, table reading, or extracting raw parameters/formulas/displayed answers). NEVER pass downstream tasks (such as "use calculator", "verify each calculation", or "calculate percentage error") to the vision tool!
-   - When calling "calculator": Formulate mathematical expressions derived from retrieved documents or visual extractions (e.g. "22 * 9550 / 960"). The calculator operates strictly on numerical expressions and never receives images.
-   - When calling "coding": Provide programming tasks only. NEVER pass image context or visual data to Qwen2.5-Coder.
-6. VISUAL EXTRACTION & CALCULATION VERIFICATION:
-   - When a user asks to inspect an image and verify, check, or perform calculations shown in it (e.g. "Extract the values from all 3 examples and verify each calculation using the calculator"):
-     * Step 1: Call "vision" with a task-specific instruction to extract visible parameters, formulas, and displayed answers/results exactly as shown. Vision extracts raw data ONLY and MUST NOT calculate or verify arithmetic.
-     * Step 2: Once Vision returns the raw extracted values (e.g. P = 22 kW, N = 960 RPM, displayed answer = 218.9 Nm), you (Qwen3) independently determine the required arithmetic expression (e.g. "22 * 9550 / 960") and call "calculator".
-     * Step 3: Calculator computes the exact numerical result (e.g. 218.85416666666666).
-     * Step 4: Compare the calculated value against the image's displayed answer, reason over rounding and tolerances, and synthesize the final answer.
-7. MULTI-STEP WORKFLOW ORDER:
-   - When a request requires both document lookup and calculation: FIRST retrieve the data using "retrieve_information", inspect the returned values/tags, and THEN call "calculator" on the numbers.
-   - When a request requires both visual inspection and calculation: FIRST extract values using "vision", inspect the returned data, and THEN call "calculator" on the numbers.
-   - Once all numbers are calculated, return "final" synthesizing the complete answer.
-8. THRESHOLD COMPARISON & PASS/FAIL CRITERIA:
-   - When the user asks a verification question (e.g., "Does it pass?"): after calculating the result, compare it against the threshold/allowable limit in the final answer (e.g. 68.9% <= 100% -> PASS).
-9. MINIMAL & PURPOSEFUL TOOL USAGE:
-   - If a question is general conversation or conceptual (e.g. "Explain what an API is"), answer directly without tools.
-   - Do not call calculator or text_transform on questions that do not need them.
-   - Use "vision" ONLY when the user's request involves visual analysis of an image, photo, diagram, schematic, chart, or visual document, or when an image is attached. Never call "vision" for text-only questions or when no image is involved.
-   - Use "coding" ONLY for writing, refactoring, or generating code using Qwen2.5-Coder.
-   - Use "execute_code" ONLY when the user explicitly asks to run, execute, or test code in the secure container sandbox. Never execute code on the host machine.
-10. EVIDENCE & CITATIONS:
-   - When returning "final", cite document names, page numbers, instrument/tag identifiers (e.g. PI-102B, bearing tag), and explicit calculation steps.
-11. CODE EXECUTION FAILURE HANDLING & DIAGNOSIS:
-   - When "execute_code" fails (Exit Code != 0, or Stderr/Error present):
-     * CAREFULLY INSPECT the failure details (Exit Code, Stderr, and Error message).
-     * DO NOT blindly call "execute_code" again with the identical failed code!
-     * If the code needs correction, call tool "coding" (Qwen2.5-Coder) with a targeted fix task specifying the exact error and Stderr so the code can be corrected.
-     * After "coding" returns the corrected code, call "execute_code" with the updated code.
-     * Once execution succeeds (Exit Code 0), return "final" summarizing the solution and output.
-     * Retry limit: Do not retry code execution more than 2 times. If execution fails after retry, return "final" diagnosing the error and providing the code.
+TOOL SELECTION AND MULTI-TOOL POLICY:
+1. GENERAL TOOL SELECTION:
+   - Before answering, determine whether the task requires one or more tools.
+   - Do NOT assume that only one tool should be used.
+   - A single user request may require multiple tools in sequence.
+   - The agent must select all tools required to complete the task accurately.
+   - Use the minimum number of tools necessary, but never skip a required tool.
+
+2. RETRIEVAL TOOL (retrieve_information):
+   - Use when the answer depends on information stored in: Knowledge Base, documents, PDFs, uploaded technical data, equipment specifications, or previously indexed industrial information.
+   - Do not invent missing values.
+   - If required information must be retrieved, retrieve it before performing calculations or conversions that depend on it.
+
+3. CALCULATOR TOOL POLICY (calculator):
+   - Whenever the task requires arithmetic using values obtained from retrieval, documents, conversation context, or another tool, you MUST use the Calculator Tool.
+   - Do NOT perform arithmetic mentally or directly in the LLM response.
+   - Examples:
+     * Retrieved: Suction pressure = 1.8 bar, Discharge pressure = 7.2 bar -> Calculator("7.2 - 1.8")
+     * Retrieved: Flow = 120 m3/h, Operating time = 3 h -> Calculator("120 * 3")
+     * Retrieved: Actual pressure = 8 bar, Limit = 10 bar -> Calculator for percentage difference.
+   - The final answer must use the Calculator Tool result.
+
+4. UNIT CONVERTER TOOL (unit_converter):
+   - Use the Unit Converter Tool whenever the task requires converting one physical unit into another.
+   - Handles common industrial units:
+     * Pressure: bar, kPa, MPa, psi, atm, Pa
+     * Temperature: °C, °F, K
+     * Length: mm, cm, m, km, inch, ft
+     * Flow: m3/h, L/min, L/s, m3/s, gpm
+     * Mass: kg, g, tonne, lb
+     * Volume: L, m3, gallon, ml
+     * Energy: J, kJ, MJ, Wh, kWh, cal, kcal, btu
+     * Power: W, kW, MW, hp
+     * Speed: m/s, km/h, rpm, rps, rad/s
+     * Time: seconds, minutes, hours, days
+   - Do NOT perform unit conversion mentally when the Unit Converter Tool can perform it.
+   - Examples:
+     * "Convert 5.4 bar to psi" -> MUST call Unit Converter Tool.
+     * "Convert the retrieved pump pressure of 5.4 bar to psi" -> Retrieve pressure if needed -> Call Unit Converter Tool -> Use converted value in final answer.
+
+5. RETRIEVAL + CALCULATOR:
+   - When the task requires retrieving values and then performing arithmetic:
+     1. Retrieve the required values.
+     2. Verify that all required values were retrieved.
+     3. Construct the mathematical expression.
+     4. Call Calculator Tool.
+     5. Use the calculator result in the final answer.
+
+6. RETRIEVAL + UNIT CONVERTER:
+   - When the task requires retrieving a value and converting its unit:
+     1. Retrieve the required value.
+     2. Identify the source and target units.
+     3. Call Unit Converter Tool.
+     4. Use the conversion result in the final answer.
+
+7. RETRIEVAL + CALCULATOR + UNIT CONVERTER:
+   - A task may require three or more tools. Do NOT stop after retrieval.
+   - Required sequence: 1. Retrieval -> 2. Calculator -> 3. Unit Converter -> 4. Final Answer.
+   - Example: Retrieve (Discharge = 7.2 bar, Suction = 1.8 bar) -> Calculator(7.2 - 1.8 = 5.4 bar) -> Unit Converter(5.4 bar -> psi) -> Final Answer.
+
+8. MULTI-TOOL TASK SELECTION:
+   - Analyze the complete task before selecting tools. Build the required tool sequence before execution.
+   - Determine: What information is required? Where does it come from? Does it need retrieval? Does arithmetic need to be performed? Does unit conversion need to be performed? Does an image need inspection? Does another tool need to process a previous tool's output?
+
+9. TOOL DEPENDENCY RULE:
+   - Tools may depend on the output of previous tools. When a tool requires information produced by another tool, execute them sequentially. Do not execute a dependent tool before its required input is available.
+
+10. VISION + OTHER TOOLS (vision):
+    - Do not send the entire task blindly to the Vision Tool if the image only provides values needed by another tool.
+    - Workflow: Vision extracts raw parameters/measurements -> Calculator performs arithmetic -> Unit Converter converts units -> Final Answer.
+    - Specialist tools are bounded workers. Never pass downstream calculation or conversion instructions to the Vision Tool.
+
+11. TOOL OUTPUT TRUST:
+    - Treat specialized tool output as authoritative for that operation.
+    - Calculator output must be used for arithmetic.
+    - Unit Converter output must be used for unit conversion.
+    - Retrieval output must be used for retrieved factual values.
+    - Do not replace a tool result with an independently generated value.
+
+12. CANONICAL TOOL SELECTION EXAMPLES:
+    - Example 1: "Calculate 25 × 4." -> Calculator only.
+    - Example 2: "Convert 100 psi to bar." -> Unit Converter only.
+    - Example 3: "What is the suction pressure of P-204?" -> Retrieval only.
+    - Example 4: "What is the pressure differential of P-204?" -> Retrieval -> Calculator.
+    - Example 5: "What is the discharge pressure of P-204 in psi?" -> Retrieval -> Unit Converter.
+    - Example 6: "Calculate the pressure differential of P-204 and give the result in psi." -> Retrieval -> Calculator -> Unit Converter.
+    - Example 7: "Read the pressure values from this image, calculate the differential, and convert it to psi." -> Vision -> Calculator -> Unit Converter.
+
+13. IMPORTANT RULE:
+    - Never avoid a specialized tool merely because the operation is simple.
+    - Simple arithmetic still requires Calculator when Calculator is available.
+    - Simple unit conversion still requires Unit Converter when Unit Converter is available.
+    - The LLM is responsible for understanding the task, selecting and ordering tools, passing inputs, and synthesizing the final response.
+    - The specialized tools are responsible for factual lookup (retrieval), arithmetic (calculator), unit conversion (unit converter), and visual extraction (vision).
+    - The agent behaves as an orchestrator, not as a replacement for specialized tools.
 
 Strict Constraints:
 1. Return ONLY the raw JSON object. Never include markdown code fences, comments, or thinking tags.
@@ -188,6 +234,14 @@ ${boundedExcerpts}`;
         return `Step ${idx + 1}:
   Action: Called tool "calculator" with expression: "${expr}"
   Observation${statusText}: Calculation result: ${expr} = ${val}`;
+      }
+
+      // Format unit converter observations
+      if (toolName === "unit_converter" && typeof obs === "object" && obs !== null) {
+        const formula = obs.conversionFormula || `${obs.value || s.input?.value} ${obs.fromUnit || s.input?.fromUnit} = ${obs.formatted || obs.result || JSON.stringify(obs)}`;
+        return `Step ${idx + 1}:
+  Action: Called tool "unit_converter" with input ${JSON.stringify(s.input || {})}
+  Observation${statusText}: Unit Conversion: ${formula}`;
       }
 
       // Format coding tool observations
@@ -351,6 +405,16 @@ export function formatReasoningState(state = {}) {
     });
   }
 
+  const converterSteps = steps.filter((s) => (s.toolName || s.tool) === "unit_converter");
+  if (converterSteps.length > 0) {
+    lines.push("\nCompleted Unit Conversions:");
+    converterSteps.forEach((s, idx) => {
+      const obs = s.observation;
+      const formula = obs?.conversionFormula || `${obs?.value || s.input?.value} ${obs?.fromUnit || s.input?.fromUnit} = ${obs?.formatted || obs?.result || JSON.stringify(obs)}`;
+      lines.push(`  - Conv ${idx + 1}: ${formula}`);
+    });
+  }
+
   return lines.join("\n");
 }
 
@@ -507,8 +571,13 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
       userRequest
     );
 
+  const hasImages =
+    (Array.isArray(taskState.images) && taskState.images.length > 0) ||
+    Boolean(taskState.image) ||
+    Boolean(decision.input?.image);
+
   // 1. DOCUMENT / RETRIEVAL POLICY:
-  if (steps.length === 0 && isDocumentQuestion && (toolName === "calculator" || toolName === "text_transform" || toolName === "coding")) {
+  if (steps.length === 0 && isDocumentQuestion && !hasImages && (toolName === "calculator" || toolName === "unit_converter" || toolName === "text_transform" || toolName === "coding")) {
     return {
       valid: false,
       reason: `For document queries, retrieve_information must be used first to gather context before calling other tools.`,
@@ -533,7 +602,7 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
   // 3. CALCULATOR POLICY:
   if (toolName === "calculator") {
     const hasMathInRequest =
-      /(\d+\s*[\+\-\*\/\^%]\s*\d+)|(\b(calculate|computation|compute|math|sum|difference|multiply|multiplication|divide|division|arithmetic|percentage|percent|formula|equation|sqrt|blowdown|tolerance|deviation|calc|count|increment)\b)/i.test(
+      /(\d+\s*[\+\-\*\/\^%]\s*\d+)|(\b(calculate|computation|compute|math|sum|difference|differential|diff|multiply|multiplication|divide|division|arithmetic|percentage|percent|formula|equation|sqrt|blowdown|tolerance|deviation|calc|count|increment)\b)/i.test(
         userRequest
       );
 
@@ -551,7 +620,43 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
     }
   }
 
-  // 4. RETRIEVAL POLICY GUARD:
+  // 4. UNIT CONVERTER POLICY:
+  if (toolName === "unit_converter") {
+    const hasConversionInRequest =
+      /\b(convert|conversion|in\s+(?:psi|bar|kpa|mpa|atm|pa|°?c|°?f|k|mm|cm|m|km|inch|ft|feet|m3\/h|l\/min|l\/s|kg|g|tonne|lb|lbs|liter|litre|l|gallon|wh|kwh|j|kj|w|kw|hp|rpm|m\/s|km\/h|seconds|minutes|hours)\b|\bto\s+[a-zA-Z°]+)/i.test(
+        userRequest
+      );
+
+    const hasConversionInInput =
+      Boolean(decision.input?.fromUnit && decision.input?.toUnit);
+
+    const hasContextFromObservation = steps.length > 0;
+
+    if (!hasConversionInRequest && !hasConversionInInput && !hasContextFromObservation) {
+      return {
+        valid: false,
+        reason: `unit_converter cannot be called because the request does not involve physical unit conversion.`,
+      };
+    }
+
+    // Anti-repetition: Prevent identical unit conversion loops
+    const currentInput = decision.input || {};
+    const curVal = currentInput.value;
+    const curFrom = String(currentInput.fromUnit || "").trim().toLowerCase();
+    const curTo = String(currentInput.toUnit || "").trim().toLowerCase();
+    const prevConversions = steps
+      .filter((s) => (s.toolName || s.tool) === "unit_converter")
+      .map((s) => `${s.input?.value}:::${String(s.input?.fromUnit || "").trim().toLowerCase()}:::${String(s.input?.toUnit || "").trim().toLowerCase()}`);
+    const curKey = `${curVal}:::${curFrom}:::${curTo}`;
+    if (prevConversions.includes(curKey)) {
+      return {
+        valid: false,
+        reason: `Duplicate unit conversion: "${curKey}" was already performed in a previous step. Proceed to next step or final answer.`,
+      };
+    }
+  }
+
+  // 5. RETRIEVAL POLICY GUARD:
   if (toolName === "retrieve_information") {
     // Normal chat / conversational questions must NOT trigger retrieval unless document context is asked
     const isGeneralConversational =
@@ -594,7 +699,7 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
     }
   }
 
-  // 5. CODING POLICY GUARD:
+  // 6. CODING POLICY GUARD:
   if (toolName === "coding") {
     // Normal / conceptual questions must NOT invoke the coding tool (e.g. "Explain what an API is")
     const isConceptualOrExplanation =
@@ -621,7 +726,7 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
     }
   }
 
-  // 6. SANDBOX EXECUTE CODE POLICY GUARD:
+  // 7. SANDBOX EXECUTE CODE POLICY GUARD:
   if (toolName === "execute_code") {
     const isConceptualOrExplanation =
       /^(explain|what is|what are|what does|how does|why is|difference between|overview of|define)\b/i.test(
@@ -681,7 +786,7 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
     }
   }
 
-  // 7. VISION POLICY GUARD:
+  // 8. VISION POLICY GUARD:
   if (toolName === "vision") {
     const isConceptualOrExplanation =
       /^(explain|what is|what are|what does|how does|why is|difference between|overview of|define)\b/i.test(
