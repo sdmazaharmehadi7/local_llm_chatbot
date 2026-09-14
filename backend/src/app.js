@@ -20,6 +20,7 @@ import authRoutes from "./routes/auth.routes.js";
 import filesRoutes from "./routes/files.routes.js";
 import knowledgeBaseRoutes from "./routes/knowledgeBase.routes.js";
 import agentRoutes from "./routes/agent.routes.js";
+import workflowRoutes from "./routes/workflow.routes.js";
 import authMiddleware from "./middleware/auth.middleware.js";
 import { checkOllamaHealth } from "./services/ollama.service.js";
 
@@ -73,8 +74,13 @@ app.use("/api/files", filesRoutes);
 // Knowledge Base document management & RAG
 app.use("/api/knowledge-base", knowledgeBaseRoutes);
 
-// Agent foundation — task execution, tool registry, and multi-step orchestration
+// Simple Agent foundation — task execution, tool registry, and multi-step orchestration
 app.use("/api/agent", agentRoutes);
+app.use("/agent", agentRoutes);
+
+// 6-Workflow Agent — controlled industrial workflow execution patterns
+app.use("/api/workflow", workflowRoutes);
+app.use("/workflow", workflowRoutes);
 
 // AI SDK v6 streaming completion — consumed by useChatStream.js / @ai-sdk/react
 // POST /api/chats/:id/completion

@@ -189,14 +189,21 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
     if (!trimmedContent && fileIds.length === 0) return;
     if (!chatId) return;
 
-    // Check for explicit /agent or /framework-agent / /langgraph trigger
-    const isAgentTrigger = /^\/(?:agent|framework-agent|agent-framework|langgraph)(?:\s+|$)/i.test(trimmedContent);
+    // Check for explicit /agent or /workflow triggers
+    const isWorkflowTrigger = /^\/(?:workflow|workflows)(?:\s+|$)/i.test(trimmedContent);
+    const isAgentTrigger = isWorkflowTrigger || /^\/(?:agent|framework-agent|agent-framework|langgraph)(?:\s+|$)/i.test(trimmedContent);
 
     if (isAgentTrigger) {
-      const agentTask = trimmedContent.replace(/^\/(?:agent|framework-agent|agent-framework|langgraph)\s*/i, "").trim();
+      const agentTask = trimmedContent
+        .replace(/^\/(?:workflow|workflows|agent|framework-agent|agent-framework|langgraph)\s*/i, "")
+        .trim();
 
       if (!agentTask) {
-        toast.error("Please provide a task for the agent. Example: /agent Calculate 25 * 40");
+        toast.error(
+          isWorkflowTrigger
+            ? "Please provide a task for the workflow agent. Example: /workflow Calculate 25 * 40"
+            : "Please provide a task for the agent. Example: /agent Calculate 25 * 40"
+        );
         return;
       }
 
@@ -214,14 +221,14 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
       try {
         // Save user message immediately
         await saveUserMessage(
-          { id: messageId, content: trimmedContent, fileIds, createdAt, model: "agent" },
+          { id: messageId, content: trimmedContent, fileIds, createdAt, model: isWorkflowTrigger ? "workflow" : "agent" },
           chatId
         );
 
         setStreamingAgentMessage({
           id: assistantMessageId,
           role: "assistant",
-          model: "agent",
+          model: isWorkflowTrigger ? "workflow" : "agent",
           content: "",
           createdAt: Date.now(),
         });
@@ -233,7 +240,8 @@ export function useChat({ id: chatId, model, webSearchEnabled, memoryEnabled }) 
         });
 
         let agentResult = null;
-        const targetUrl = API_BASE ? `${API_BASE}/api/agent/tasks` : "/api/agent/tasks";
+        const endpoint = isWorkflowTrigger ? "/api/workflow/tasks" : "/api/agent/tasks";
+        const targetUrl = API_BASE ? `${API_BASE}${endpoint}` : endpoint;
 
 
         try {

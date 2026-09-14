@@ -17,6 +17,7 @@ import {
 const router = Router();
 
 // Primary Sovereign Agent endpoints (LangGraph)
+router.post("/", createAgentTask);
 router.post("/tasks", createAgentTask);
 router.get("/tasks/:taskId", getAgentTask);
 router.get("/tools", listAgentTools);

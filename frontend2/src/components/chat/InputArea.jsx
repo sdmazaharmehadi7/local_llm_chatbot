@@ -24,6 +24,13 @@ const SLASH_COMMANDS = [
     icon: Sparkles,
     badge: "Agent",
   },
+  {
+    command: "/workflow",
+    label: "6-Workflow Agent",
+    description: "Controlled industrial workflow execution patterns",
+    icon: Sparkles,
+    badge: "Workflow",
+  },
 ];
 
 

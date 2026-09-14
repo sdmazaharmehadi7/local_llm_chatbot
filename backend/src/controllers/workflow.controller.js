@@ -1,32 +1,35 @@
 /**
- * Sovereign Agent Controller
+ * Sovereign Workflow Controller (6 Industrial Workflows)
  *
- * Exposes REST and SSE endpoints for the LangGraph-powered Sovereign Agent.
+ * Exposes REST and SSE endpoints for the LangGraph-powered 6-Workflow Agent:
+ *   POST   /workflow                 - Submit and execute a workflow task (JSON or SSE)
+ *   POST   /workflow/tasks           - Alias for workflow execution
+ *   GET    /workflow/tasks/:taskId   - Get workflow task status
+ *   GET    /workflow/tools           - List registered workflow capabilities
  */
 
 import fs from "fs";
-import { runAgentTask } from "../services/agent/agent.service.js";
+import { runWorkflowTask } from "../services/agent/agent.service.js";
 import { getAgentToolsMetadata } from "../services/agent/agentTools.js";
 import { agentGraphService } from "../services/agent/agentGraph.service.js";
 import File from "../models/File.js";
 import Chat from "../models/Chat.js";
 
 /**
- * POST /api/agent/tasks
- * Submit a task to the LangGraph Sovereign Agent.
+ * POST /workflow or POST /api/workflow/tasks
+ * Submit a task to the 6-Workflow LangGraph Agent.
  */
-export async function createAgentTask(req, res) {
+export async function createWorkflowTask(req, res) {
   try {
     const { message, chatId, workspaceId, options, stream, images, image, fileIds } = req.body || {};
 
     if (!message || typeof message !== "string" || !message.trim()) {
       return res.status(400).json({
         success: false,
-        error: "Invalid agent request. Please provide a clear task description.",
+        error: "Invalid workflow request. Please provide a clear task description.",
       });
     }
 
-    // Authenticated identity from authMiddleware (cannot be overridden by request body)
     const userId = req.userId || "user-local-admin";
 
     // Multi-tenant check: Prevent cross-user chat access
@@ -58,7 +61,7 @@ export async function createAgentTask(req, res) {
           }
         }
       } catch (fErr) {
-        console.warn("[agent.controller] Could not load attached image files from fileIds:", fErr.message);
+        console.warn("[workflow.controller] Could not load attached image files from fileIds:", fErr.message);
       }
     }
 
@@ -100,13 +103,18 @@ export async function createAgentTask(req, res) {
       };
 
       try {
+        sendSse("workflow_start", {
+          message: "Analysing your question...",
+          status: "planning",
+          framework: "langgraph-workflows",
+        });
         sendSse("agent_start", {
           message: "Analysing your question...",
           status: "planning",
-          framework: "langgraph",
+          framework: "langgraph-workflows",
         });
 
-        const taskResult = await runAgentTask({
+        const taskResult = await runWorkflowTask({
           message: message.trim(),
           userId,
           chatId: chatId || null,
@@ -120,13 +128,15 @@ export async function createAgentTask(req, res) {
               if (status === "planning") {
                 sendSse("reasoning", {
                   status: "planning",
-                  message: evt.message || "Evaluating required action...",
+                  workflow: evt.workflow,
+                  message: evt.message || "Evaluating required workflow action...",
                   reason: evt.reason || "Evaluating task...",
                 });
               } else if (status === "tool") {
                 sendSse("tool_start", {
                   status: "tool",
                   tool: evt.tool,
+                  workflow: evt.workflow,
                   message: evt.message || `Using tool: ${evt.tool}`,
                   reason: evt.reason,
                 });
@@ -134,25 +144,30 @@ export async function createAgentTask(req, res) {
                 sendSse("tool_result", {
                   status: "tool_complete",
                   tool: evt.tool,
+                  workflow: evt.workflow,
                   success: evt.success,
                   message: evt.message || "Tool execution completed.",
+                  result: evt.result,
                 });
               } else if (status === "analyzing") {
                 sendSse("reasoning", {
                   status: "analyzing",
                   tool: evt.tool,
+                  workflow: evt.workflow,
                   message: evt.message || "Evaluating the tool output...",
                   reason: evt.reason,
                 });
               } else if (status === "preparing_answer") {
                 sendSse("reasoning", {
                   status: "preparing_answer",
+                  workflow: evt.workflow,
                   message: evt.message || "Generating response...",
                   reason: evt.reason,
                 });
               } else if (status === "completed") {
                 sendSse("reasoning", {
                   status: "completed",
+                  workflow: evt.workflow,
                   message: evt.message || "Response ready",
                 });
               } else if (status === "error") {
@@ -175,25 +190,42 @@ export async function createAgentTask(req, res) {
           },
         });
 
-        sendSse("agent_complete", {
+        sendSse("workflow_complete", {
           message: "Completed",
           status: "completed",
-          framework: "langgraph",
+          framework: "langgraph-workflows",
+          workflow: taskResult.workflow,
           taskId: taskResult.taskId,
           response: taskResult.response,
           steps: taskResult.steps,
           success: taskResult.success,
         });
 
+        sendSse("agent_complete", {
+          message: "Completed",
+          status: "completed",
+          framework: "langgraph-workflows",
+          workflow: taskResult.workflow,
+          taskId: taskResult.taskId,
+          response: taskResult.response,
+          steps: taskResult.steps,
+          success: taskResult.success,
+        });
+
+        sendSse("workflow_result", {
+          ...taskResult,
+          framework: "langgraph-workflows",
+        });
+
         sendSse("agent_result", {
           ...taskResult,
-          framework: "langgraph",
+          framework: "langgraph-workflows",
         });
       } catch (streamErr) {
         sendSse("error", {
           status: "error",
-          error: streamErr.message || "Agent execution failed.",
-          message: streamErr.message || "Agent execution failed.",
+          error: streamErr.message || "Workflow execution failed.",
+          message: streamErr.message || "Workflow execution failed.",
         });
       } finally {
         isTaskFinished = true;
@@ -205,7 +237,7 @@ export async function createAgentTask(req, res) {
     }
 
     // Non-streaming response
-    const taskResult = await runAgentTask({
+    const taskResult = await runWorkflowTask({
       message: message.trim(),
       userId,
       chatId: chatId || null,
@@ -216,22 +248,21 @@ export async function createAgentTask(req, res) {
 
     return res.status(taskResult.success ? 200 : 422).json({
       ...taskResult,
-      framework: "langgraph",
+      framework: "langgraph-workflows",
     });
   } catch (err) {
-    console.error("[agent.controller] Error creating agent task:", err);
+    console.error("[workflow.controller] Error creating workflow task:", err);
     return res.status(500).json({
       success: false,
-      error: err.message || "Internal server error during agent task execution.",
+      error: err.message || "Internal server error during workflow task execution.",
     });
   }
 }
 
 /**
- * GET /api/agent/tasks/:taskId
- * Retrieve status for a task.
+ * GET /workflow/tasks/:taskId or GET /api/workflow/tasks/:taskId
  */
-export async function getAgentTask(req, res) {
+export async function getWorkflowTask(req, res) {
   try {
     const { taskId } = req.params;
     if (!taskId) {
@@ -248,50 +279,54 @@ export async function getAgentTask(req, res) {
       const stateObj = await agentGraphService.getCheckpointState(threadId);
       if (stateObj && stateObj.values) {
         checkpointState = {
+          taskId: stateObj.values.taskId,
           status: stateObj.values.status,
-          toolExecutionCount: stateObj.values.toolExecutionCount,
-          stepCount: (stateObj.values.steps || []).length,
+          workflow: stateObj.values.workflow,
+          stepsCount: (stateObj.values.steps || []).length,
+          hasFinalResponse: Boolean(stateObj.values.finalResponse),
         };
       }
-    } catch {
-      // checkpoint not found or empty
+    } catch (_stateErr) {
+      // Thread not found yet
     }
 
     return res.json({
       success: true,
-      framework: "langgraph",
       taskId,
       threadId,
-      checkpoint: checkpointState,
-      message: "Agent state is managed through the LangGraph execution cycle.",
+      state: checkpointState,
     });
   } catch (err) {
-    console.error(`[agent.controller] Error fetching task ${req.params.taskId}:`, err);
-    return res.status(500).json({ success: false, error: "Internal server error." });
+    console.error("[workflow.controller] Error getting workflow task:", err);
+    return res.status(500).json({
+      success: false,
+      error: err.message || "Could not retrieve workflow task status.",
+    });
   }
 }
 
 /**
- * GET /api/agent/tools
- * List all registered LangChain tools in the sovereign catalog.
+ * GET /workflow/tools or GET /api/workflow/tools
  */
-export async function listAgentTools(_req, res) {
+export async function listWorkflowTools(_req, res) {
   try {
     const tools = getAgentToolsMetadata();
     return res.json({
       success: true,
-      framework: "langgraph",
-      tools,
       count: tools.length,
+      tools,
+      framework: "langgraph-workflows",
     });
   } catch (err) {
-    console.error("[agent.controller] Error listing tools:", err);
-    return res.status(500).json({ success: false, error: "Internal server error." });
+    return res.status(500).json({
+      success: false,
+      error: err.message || "Failed to list workflow tools.",
+    });
   }
 }
 
 export default {
-  createAgentTask,
-  getAgentTask,
-  listAgentTools,
+  createWorkflowTask,
+  getWorkflowTask,
+  listWorkflowTools,
 };
