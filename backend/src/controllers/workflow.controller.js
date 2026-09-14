@@ -9,9 +9,9 @@
  */
 
 import fs from "fs";
-import { runWorkflowTask } from "../services/agent/agent.service.js";
-import { getAgentToolsMetadata } from "../services/agent/agentTools.js";
-import { agentGraphService } from "../services/agent/agentGraph.service.js";
+import { runWorkflowTask } from "../services/workflow/workflow.service.js";
+import { getWorkflowToolsMetadata } from "../services/workflow/workflowTools.js";
+import { workflowGraphService } from "../services/workflow/workflowGraph.service.js";
 import File from "../models/File.js";
 import Chat from "../models/Chat.js";
 
@@ -276,7 +276,7 @@ export async function getWorkflowTask(req, res) {
 
     let checkpointState = null;
     try {
-      const stateObj = await agentGraphService.getCheckpointState(threadId);
+      const stateObj = await workflowGraphService.getCheckpointState(threadId);
       if (stateObj && stateObj.values) {
         checkpointState = {
           taskId: stateObj.values.taskId,
@@ -310,7 +310,7 @@ export async function getWorkflowTask(req, res) {
  */
 export async function listWorkflowTools(_req, res) {
   try {
-    const tools = getAgentToolsMetadata();
+    const tools = getWorkflowToolsMetadata();
     return res.json({
       success: true,
       count: tools.length,

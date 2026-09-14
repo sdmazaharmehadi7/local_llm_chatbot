@@ -12,8 +12,7 @@
  * - Zero cloud LLMs, zero telemetry
  */
 
-import { AGENT_ACTION_TYPES, WORKFLOW_TYPES } from "./agent.types.js";
-
+import { AGENT_ACTION_TYPES } from "./agent.types.js";
 
 export const AGENT_BRAIN_MODEL = "qwen3:8b";
 
@@ -25,27 +24,9 @@ Return final when the task is complete or can be answered directly.
 Never invent tools.
 Never output hidden reasoning.
 
-Six Controlled Industrial Workflows & Execution Patterns:
-When planning the task, identify which execution pattern applies:
-1. "knowledge_retrieval" (Workflow 1): Factual information from organizational Knowledge Base / documents only (Qwen3 -> Retrieval -> Qwen3 -> Final).
-2. "retrieval_calculation" (Workflow 2): Factual values retrieved from Knowledge Base and subsequently calculated (Qwen3 -> Retrieval -> Qwen3 -> Calculator -> Qwen3 -> Final).
-3. "vision_calculation" (Workflow 3): Numerical info extracted from an image and verified/calculated (Qwen3 -> Vision -> Qwen3 -> Calculator -> Qwen3 -> Final).
-4. "vision_knowledge" (Workflow 4): Image analysis combined with organizational Knowledge Base information (Qwen3 -> Vision -> Qwen3 -> Retrieval -> Qwen3 -> Final).
-5. "coding_sandbox" (Workflow 5): Code generation and container execution (Qwen3 -> Coding -> Sandbox -> Qwen3 -> Final, with max 2 repair attempts on execution failure).
-6. "general" (Workflow 6): Fallback / dynamic multi-tool reasoning or direct conceptual explanation when no predefined workflow matches (Qwen3 -> dynamic tools / direct -> Final).
-
-Workflow Selection Priority:
-1. Does the task require code generation + execution? -> "coding_sandbox"
-2. Does the task require image analysis + calculation? -> "vision_calculation"
-3. Does the task require image analysis + organizational knowledge? -> "vision_knowledge"
-4. Does the task require Knowledge Base information + calculation? -> "retrieval_calculation"
-5. Does the task require Knowledge Base information only? -> "knowledge_retrieval"
-6. Otherwise -> "general" (fallback / existing agent loop)
-
 Response Schema:
 If a tool is needed:
 {
-  "workflow": "knowledge_retrieval" | "retrieval_calculation" | "vision_calculation" | "vision_knowledge" | "coding_sandbox" | "general",
   "action": "tool",
   "tool": "<registered_tool_name>",
   "reason": "<short 1-sentence reasoning for selecting this tool>",
@@ -54,7 +35,6 @@ If a tool is needed:
 
 If task is complete or can be answered directly without tools:
 {
-  "workflow": "knowledge_retrieval" | "retrieval_calculation" | "vision_calculation" | "vision_knowledge" | "coding_sandbox" | "general",
   "action": "final",
   "reason": "<short 1-sentence summary of reasoning>",
   "answer": "<final answer for user with citations and calculation steps>"
@@ -502,12 +482,6 @@ export function parseBrainOutput(rawOutput) {
     };
   }
 
-  const validWorkflows = Object.values(WORKFLOW_TYPES);
-  let workflowType =
-    typeof parsed.workflow === "string" && validWorkflows.includes(parsed.workflow.trim().toLowerCase())
-      ? parsed.workflow.trim().toLowerCase()
-      : null;
-
   // Handle TOOL action
   if (action === "tool") {
     const toolName = parsed.tool || parsed.toolName;
@@ -525,23 +499,11 @@ export function parseBrainOutput(rawOutput) {
         ? parsed.reason.trim()
         : `Executing tool: ${toolName.trim()}`;
 
-    if (!workflowType) {
-      const cleanTool = toolName.trim().toLowerCase();
-      if (cleanTool === "coding" || cleanTool === "execute_code") {
-        workflowType = WORKFLOW_TYPES.CODING_SANDBOX;
-      } else if (cleanTool === "retrieve_information") {
-        workflowType = WORKFLOW_TYPES.KNOWLEDGE_RETRIEVAL;
-      } else {
-        workflowType = WORKFLOW_TYPES.GENERAL;
-      }
-    }
-
     return {
       valid: true,
       decision: {
         action: AGENT_ACTION_TYPES.TOOL,
         type: AGENT_ACTION_TYPES.TOOL,
-        workflow: workflowType,
         tool: toolName.trim(),
         toolName: toolName.trim(),
         input,
@@ -571,7 +533,6 @@ export function parseBrainOutput(rawOutput) {
       decision: {
         action: AGENT_ACTION_TYPES.FINAL,
         type: AGENT_ACTION_TYPES.FINAL,
-        workflow: workflowType || WORKFLOW_TYPES.GENERAL,
         answer,
         response: answer,
         reason: finalReason,
@@ -604,8 +565,14 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
       userRequest
     );
 
+  const hasExplicitTransformRequest =
+    /\b(uppercase|upper case|lowercase|lower case|capital|all caps|capitalize|word count|count words|count\s+(?:the\s+)?words|character count|char count|count characters|count\s+(?:the\s+)?characters|reverse text|reverse string|reverse the|trim whitespace|trim text)\b/i.test(
+      userRequest
+    );
+
   const isDocumentQuestion =
     !hasExplicitCodeGenerationIntent &&
+    !hasExplicitTransformRequest &&
     /\b(document|documents|file|files|pdf|sop|manual|manuals|policy|policies|procedure|procedures|regulation|regulations|safety requirement|safety requirements|prv|cdu|crude distillation|valve|inspection interval|acceptance criteria|report|reports|inspection|equipment|pump|discharge|suction|pressure|flow rate|temperature|transmitter)\b/i.test(
       userRequest
     );
@@ -625,11 +592,6 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
 
   // 2. TEXT TRANSFORM POLICY:
   if (toolName === "text_transform") {
-    const hasExplicitTransformRequest =
-      /\b(uppercase|upper case|lowercase|lower case|capital|all caps|capitalize|word count|count words|count\s+(?:the\s+)?words|character count|char count|count characters|count\s+(?:the\s+)?characters|reverse text|reverse string|reverse the|trim whitespace|trim text)\b/i.test(
-        userRequest
-      );
-
     if (!hasExplicitTransformRequest) {
       return {
         valid: false,
@@ -640,28 +602,14 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
 
   // 3. CALCULATOR POLICY:
   if (toolName === "calculator") {
-    const expr = typeof decision.input?.expression === "string" ? decision.input.expression.trim() : "";
-    if (!expr) {
-      return {
-        valid: false,
-        reason: "Calculator requires a non-empty 'expression' parameter.",
-      };
-    }
-
-    if (expr.length > 250 || /\b(document|please|according to|maintenance procedure|attached file|user asked)\b/i.test(expr)) {
-      return {
-        valid: false,
-        reason: "Calculator must receive ONLY the exact mathematical expression (e.g. '5.4 - 0' or '22 * 9550 / 960'), not document text or conversational instructions.",
-      };
-    }
-
     const hasMathInRequest =
       /(\d+\s*[\+\-\*\/\^%]\s*\d+)|(\b(calculate|computation|compute|math|sum|difference|differential|diff|multiply|multiplication|divide|division|arithmetic|percentage|percent|formula|equation|sqrt|blowdown|tolerance|deviation|calc|count|increment)\b)/i.test(
         userRequest
       );
 
     const hasMathInInput =
-      /(\d+\s*[\+\-\*\/\^%]\s*\d+)|(sqrt|abs|round|floor|ceil|min|max|pow)/i.test(expr);
+      typeof decision.input?.expression === "string" &&
+      /(\d+\s*[\+\-\*\/\^%]\s*\d+)|(sqrt|abs|round|floor|ceil|min|max|pow)/i.test(decision.input.expression);
 
     const hasMathFromObservation = steps.length > 0;
 
@@ -813,7 +761,7 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
     if (previousExecuteSteps.length >= 3) {
       return {
         valid: false,
-        reason: `Code execution retry limit reached (maximum 2 repair attempts). Do not call execute_code again; return final response diagnosing the execution output and error.`,
+        reason: `Code execution retry limit reached (3 execution attempts). Do not call execute_code again; return final response diagnosing the execution output and error.`,
       };
     }
 

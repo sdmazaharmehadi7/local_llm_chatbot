@@ -1,22 +1,24 @@
 /**
- * Sovereign Agent Service (LangGraph Orchestrator)
+ * Sovereign Workflow Service (6 Industrial Workflows Orchestrator)
  *
- * Core agent orchestrator powered solely by LangGraph JS.
- * - Coordinates task execution via LangGraph StateGraph
- * - Manages chat-scoped context retrieval from MongoDB
- * - Delivers streaming SSE progress events and final answer chunks
- * - Enforces deterministic, bounded, and sovereign local execution
+ * Coordinates execution of the 6 Controlled Industrial Workflows via LangGraph.
+ *
+ * GUARANTEES:
+ * - Direct execution path dedicated to /workflow
+ * - Zero crossover into the simple agent path
+ * - Multi-tenant security & chat-scoped context isolation
+ * - Returns structured workflow metadata and progress events
  */
 
 import crypto from "crypto";
-import { agentGraphService } from "./agentGraph.service.js";
-import { AGENT_STATUS } from "./agent.types.js";
+import { workflowGraphService } from "./workflowGraph.service.js";
+import { AGENT_STATUS, WORKFLOW_TYPES, WORKFLOW_STATUS } from "../agent/agent.types.js";
 import Message from "../../models/Message.js";
 import Chat from "../../models/Chat.js";
 import { streamChatFromOllama } from "../ollama.service.js";
 
 /**
- * Execute an Agent task end-to-end using the LangGraph engine.
+ * Execute a task through the 6-Workflow architecture.
  *
  * @param {object} params
  * @param {string} params.message - User prompt
@@ -24,19 +26,10 @@ import { streamChatFromOllama } from "../ollama.service.js";
  * @param {string} [params.userId="user-local-admin"] - Authenticated user identifier
  * @param {string} [params.chatId=null] - Associated chat session ID
  * @param {string} [params.workspaceId="default"] - Active workspace ID
- * @param {object} [params.options={}] - Custom configuration / callbacks (onProgress, onChunk, signal, retriever)
- * @returns {Promise<{
- *   success: boolean,
- *   taskId: string,
- *   status: string,
- *   response: string,
- *   steps: Array<object>,
- *   events: Array<object>,
- *   executionTimeMs: number,
- *   error?: string
- * }>}
+ * @param {object} [params.options={}] - Custom configuration / callbacks
+ * @param {Array}  [params.images=[]] - Attached image data URIs
  */
-export async function runAgentTask({
+export async function runWorkflowTask({
   message,
   taskId = crypto.randomUUID(),
   userId = "user-local-admin",
@@ -48,7 +41,7 @@ export async function runAgentTask({
   const startTime = Date.now();
 
   if (!message || typeof message !== "string" || !message.trim()) {
-    throw new Error("Task message is required.");
+    throw new Error("Workflow task message is required.");
   }
 
   const taskImages = Array.isArray(images) && images.length > 0
@@ -57,16 +50,15 @@ export async function runAgentTask({
 
   const effectiveUserId = String(userId || "user-local-admin").trim();
 
-  // Load chat session conversation history from MongoDB (text only - zero image leakage)
+  // Multi-tenant chat history loading
   let conversationHistory = [];
   if (chatId) {
     try {
-      // SECURITY & MULTI-TENANT ISOLATION: Verify chat ownership if Chat model is available
       if (Chat && Chat.db && Chat.db.readyState === 1) {
         const chatDoc = await Chat.findOne({ _id: chatId }).lean();
         if (chatDoc && chatDoc.userId && chatDoc.userId !== effectiveUserId) {
           console.warn(
-            `[agent.service] Context isolation rejection: User ${effectiveUserId} attempted to access chat ${chatId} belonging to ${chatDoc.userId}`
+            `[workflow.service] Context isolation rejection: User ${effectiveUserId} attempted to access chat ${chatId} belonging to ${chatDoc.userId}`
           );
           throw new Error(`Unauthorized: Chat ${chatId} does not belong to user ${effectiveUserId}`);
         }
@@ -86,11 +78,11 @@ export async function runAgentTask({
       if (err.message.includes("Unauthorized")) {
         throw err;
       }
-      console.warn(`[agent.service] Notice: Could not load chat history for ${chatId}:`, err.message);
+      console.warn(`[workflow.service] Notice: Could not load chat history for ${chatId}:`, err.message);
     }
   }
 
-  console.log(`[agent] LangGraph task started: ${taskId}`);
+  console.log(`[workflow] LangGraph 6-Workflow task started: ${taskId}`);
 
   const progressEvents = [];
   const emitProgress = (event) => {
@@ -103,13 +95,12 @@ export async function runAgentTask({
       try {
         options.onProgress(fullEvent);
       } catch (err) {
-        console.warn("[agent.service] Error in onProgress callback:", err.message);
+        console.warn("[workflow.service] Error in onProgress callback:", err.message);
       }
     }
   };
 
-  // Build the compiled LangGraph workflow
-  const app = agentGraphService.buildGraph({
+  const app = workflowGraphService.buildWorkflowGraph({
     onProgress: emitProgress,
     retriever: options.retriever,
     coderClient: options.coderClient,
@@ -118,7 +109,6 @@ export async function runAgentTask({
     signal: options.signal,
   });
 
-  // Formulate LangGraph checkpointer thread ID partitioned by userId and chatId
   const threadId =
     options?.threadId ||
     (chatId ? `${effectiveUserId}:${chatId}` : `${effectiveUserId}:adhoc:${taskId}`);
@@ -135,16 +125,25 @@ export async function runAgentTask({
         conversationHistory,
         images: taskImages,
         steps: [],
+        retrievedFacts: [],
         toolExecutionCount: 0,
         status: AGENT_STATUS.PLANNING,
         currentAction: null,
         finalResponse: "",
         error: null,
+        workflow: {
+          type: WORKFLOW_TYPES.GENERAL,
+          status: WORKFLOW_STATUS.PENDING,
+          currentStep: "",
+          completedSteps: [],
+          retryCount: 0,
+          replaceSteps: true,
+        },
       },
       { configurable: { thread_id: threadId } }
     );
   } catch (graphErr) {
-    console.error(`[agent.service] Error during LangGraph execution:`, graphErr);
+    console.error(`[workflow.service] Error during LangGraph workflow execution:`, graphErr);
     return {
       success: false,
       taskId,
@@ -152,17 +151,22 @@ export async function runAgentTask({
       userId: effectiveUserId,
       chatId,
       status: "failed",
+      workflow: {
+        type: WORKFLOW_TYPES.GENERAL,
+        status: WORKFLOW_STATUS.FAILED,
+      },
       response: "",
       steps: [],
       events: progressEvents,
       executionTimeMs: Date.now() - startTime,
       error: graphErr.message,
+      framework: "langgraph-workflows",
     };
   }
 
   let finalAnswer = finalGraphState.finalResponse || "";
 
-  // Aggregate retrieved document sources across steps
+  // Aggregate sources from retrieval steps
   const extractedSources = [];
   const seenSourceKeys = new Set();
   for (const step of finalGraphState.steps || []) {
@@ -194,7 +198,7 @@ export async function runAgentTask({
   // Stream answer chunks if requested and answer is available
   const isStreamingRequested = typeof options.onChunk === "function";
   if (isStreamingRequested && finalAnswer) {
-    const isMockBrain = typeof agentGraphService.brainLlmClient === "function";
+    const isMockBrain = typeof workflowGraphService.brainLlmClient === "function";
     if (!isMockBrain && finalGraphState.steps?.length > 0) {
       try {
         const retrievalSteps = (finalGraphState.steps || []).filter(
@@ -235,7 +239,7 @@ export async function runAgentTask({
 
         let streamPrompt;
         if (promptSections.length > 0) {
-          streamPrompt = `You are Sovereign Agent. Deliver a direct, well-structured, and complete final answer to the user based on the findings below.
+          streamPrompt = `You are Sovereign Workflow Agent. Deliver a direct, well-structured, and complete final answer to the user based on the findings below.
 Cite document titles, section/page numbers, and calculation formulas clearly.
 
 User Question: "${message}"
@@ -244,7 +248,7 @@ ${promptSections.join("\n\n")}
 
 Provide the complete final answer.`;
         } else {
-          streamPrompt = `You are Sovereign Agent. Provide a direct and complete answer to the user's question:
+          streamPrompt = `You are Sovereign Workflow Agent. Provide a direct and complete answer to the user's question:
 User Question: "${message}"`;
         }
 
@@ -296,7 +300,7 @@ User Question: "${message}"`;
           finalAnswer = streamedAnswer;
         }
       } catch (streamErr) {
-        console.warn("[agent.service] Streaming final answer from Ollama failed, falling back to buffered answer:", streamErr.message);
+        console.warn("[workflow.service] Streaming final answer from Ollama failed, falling back to buffered answer:", streamErr.message);
         options.onChunk({ text: finalAnswer });
       }
     } else {
@@ -311,12 +315,13 @@ User Question: "${message}"`;
   if (isSuccess) {
     emitProgress({
       status: "completed",
+      workflow: finalGraphState.workflow?.type || WORKFLOW_TYPES.GENERAL,
       message: "Response ready",
     });
   }
 
   const totalExecutionTimeMs = Date.now() - startTime;
-  console.log(`[agent] LangGraph task finished: ${taskId} (${isSuccess ? "COMPLETED" : "FAILED"})`);
+  console.log(`[workflow] LangGraph workflow task finished: ${taskId} (${isSuccess ? "COMPLETED" : "FAILED"})`);
 
   const structuredState = {
     taskId,
@@ -335,6 +340,10 @@ User Question: "${message}"`;
     })),
     remaining_information: finalGraphState.remainingInformation || [],
     iteration_count: (finalGraphState.steps || []).length,
+    workflow: finalGraphState.workflow || {
+      type: WORKFLOW_TYPES.GENERAL,
+      status: isSuccess ? WORKFLOW_STATUS.COMPLETED : WORKFLOW_STATUS.FAILED,
+    },
   };
 
   return {
@@ -344,6 +353,10 @@ User Question: "${message}"`;
     userId: effectiveUserId,
     chatId: chatId || null,
     status: isSuccess ? "completed" : "failed",
+    workflow: finalGraphState.workflow || {
+      type: WORKFLOW_TYPES.GENERAL,
+      status: isSuccess ? WORKFLOW_STATUS.COMPLETED : WORKFLOW_STATUS.FAILED,
+    },
     response: finalAnswer,
     steps: finalGraphState.steps || [],
     sources: extractedSources,
@@ -351,14 +364,11 @@ User Question: "${message}"`;
     events: progressEvents,
     executionTimeMs: totalExecutionTimeMs,
     state: structuredState,
+    framework: "langgraph-workflows",
     ...(finalGraphState.error ? { error: finalGraphState.error } : {}),
   };
 }
 
-import { runWorkflowTask } from "../workflow/workflow.service.js";
-export { runWorkflowTask };
-
 export default {
-  runAgentTask,
   runWorkflowTask,
 };

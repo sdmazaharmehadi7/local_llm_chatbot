@@ -25,6 +25,9 @@ export const WORKFLOW_TYPES = Object.freeze({
   VISION_CALCULATION: "vision_calculation",
   VISION_KNOWLEDGE: "vision_knowledge",
   CODING_SANDBOX: "coding_sandbox",
+  CALCULATION: "calculation",
+  UNIT_CONVERSION: "unit_conversion",
+  VISION: "vision",
   GENERAL: "general",
 });
 

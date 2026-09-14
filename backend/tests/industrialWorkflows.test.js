@@ -13,8 +13,10 @@
  */
 
 import assert from "assert";
-import { runAgentTask, runWorkflowTask } from "../src/services/agent/agent.service.js";
+import { runAgentTask } from "../src/services/agent/agent.service.js";
 import { agentGraphService } from "../src/services/agent/agentGraph.service.js";
+import { runWorkflowTask } from "../src/services/workflow/workflow.service.js";
+import { workflowGraphService } from "../src/services/workflow/workflowGraph.service.js";
 import { WORKFLOW_TYPES } from "../src/services/agent/agent.types.js";
 import { createAgentTask } from "../src/controllers/agent.controller.js";
 import { createWorkflowTask } from "../src/controllers/workflow.controller.js";
@@ -39,7 +41,7 @@ async function runTests() {
     // ───────────────────────────────────────────────────────────────────────────
     console.log("\n--- [Test 1] Workflow 6 — General Question ---");
     {
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         return JSON.stringify({
           workflow: "general",
           action: "final",
@@ -48,7 +50,7 @@ async function runTests() {
         });
       });
 
-      const res = await runAgentTask({
+      const res = await runWorkflowTask({
         message: "Explain centrifugal pump cavitation.",
         userId: "test-eng-1",
       });
@@ -66,7 +68,7 @@ async function runTests() {
     console.log("\n--- [Test 2] Workflow 6 — Calculator Only ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -85,7 +87,7 @@ async function runTests() {
         });
       });
 
-      const res = await runAgentTask({
+      const res = await runWorkflowTask({
         message: "What is 25 * 40?",
         userId: "test-eng-1",
       });
@@ -110,7 +112,7 @@ async function runTests() {
     console.log("\n--- [Test 3] Workflow 1 — Knowledge Retrieval ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -139,7 +141,7 @@ async function runTests() {
         ],
       });
 
-      const res = await runAgentTask({
+      const res = await runWorkflowTask({
         message: "What PPE is required for pump maintenance according to our documents?",
         userId: "test-eng-1",
         options: { retriever: mockRetriever },
@@ -160,7 +162,7 @@ async function runTests() {
     console.log("\n--- [Test 4] Workflow 2 — Retrieval + Calculation ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -198,7 +200,7 @@ async function runTests() {
         ],
       });
 
-      const res = await runAgentTask({
+      const res = await runWorkflowTask({
         message: "Retrieve the discharge and suction pressure from the document and calculate the pressure difference.",
         userId: "test-eng-1",
         options: { retriever: mockRetriever },
@@ -221,7 +223,7 @@ async function runTests() {
     console.log("\n--- [Test 5] Image Analysis Only ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -243,7 +245,7 @@ async function runTests() {
       const mockVisionClient = async () =>
         "Visual Analysis:\nHorizontal end-suction centrifugal pump coupled to an electric motor with coupling guard.";
 
-      const res = await runAgentTask({
+      const res = await runWorkflowTask({
         message: "Describe the equipment shown in this image.",
         userId: "test-eng-1",
         images: [SAMPLE_IMAGE_BASE64],
@@ -263,7 +265,7 @@ async function runTests() {
     console.log("\n--- [Test 6] Workflow 3 — Vision + Calculation ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -294,7 +296,7 @@ async function runTests() {
       const mockVisionClient = async () =>
         "Visual Analysis:\nNameplate shows Power P = 22 kW, Speed N = 960 RPM, Displayed Torque = 218.9 Nm.";
 
-      const res = await runAgentTask({
+      const res = await runWorkflowTask({
         message: "Extract the values from this image and verify the calculation.",
         userId: "test-eng-1",
         images: [SAMPLE_IMAGE_BASE64],
@@ -317,7 +319,7 @@ async function runTests() {
     console.log("\n--- [Test 7] Workflow 4 — Vision + Knowledge Base ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -358,7 +360,7 @@ async function runTests() {
         ],
       });
 
-      const res = await runAgentTask({
+      const res = await runWorkflowTask({
         message: "Analyze this equipment image and explain whether the observed condition matches our maintenance procedure.",
         userId: "test-eng-1",
         images: [SAMPLE_IMAGE_BASE64],
@@ -381,7 +383,7 @@ async function runTests() {
     console.log("\n--- [Test 8] Workflow 5 — Coding + Sandbox ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -423,7 +425,7 @@ async function runTests() {
         sandbox: { isolated: true },
       });
 
-      const res = await runAgentTask({
+      const res = await runWorkflowTask({
         message: "Write a Python program to print the first 10 prime numbers and run it.",
         userId: "test-eng-1",
         options: { coderClient: mockCoderClient, sandboxRunner: mockSandboxRunner },
@@ -446,7 +448,7 @@ async function runTests() {
     {
       // Part A: 1 failure + 1 successful repair
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -520,7 +522,7 @@ async function runTests() {
         };
       };
 
-      const resA = await runAgentTask({
+      const resA = await runWorkflowTask({
         message: "Run a python script and repair if it fails.",
         userId: "test-eng-1",
         options: {
@@ -541,7 +543,7 @@ async function runTests() {
 
       // Part B: Exceeding 2 repairs (3 executions total) halts and reports failure honestly
       stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         // Attempt 1
         if (stepCount === 1) return JSON.stringify({ action: "tool", tool: "coding", input: { task: "code" } });
@@ -568,7 +570,7 @@ async function runTests() {
         sandbox: { isolated: true },
       });
 
-      const resB = await runAgentTask({
+      const resB = await runWorkflowTask({
         message: "Run a python script with persistent failure.",
         userId: "test-eng-1",
         options: {
@@ -588,7 +590,7 @@ async function runTests() {
     console.log("\n--- [Test 10] Complex Multi-Tool Task ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -630,7 +632,7 @@ async function runTests() {
         results: [{ filename: "ISO_10816_Standard.pdf", page: 4, text: "Zone B/C threshold = 4.5 mm/s RMS." }],
       });
 
-      const res = await runAgentTask({
+      const res = await runWorkflowTask({
         message: "Analyze the values in this equipment image, compare them with the relevant maintenance requirement in our Knowledge Base, calculate the percentage difference, and explain whether the value is within the acceptable range.",
         userId: "test-eng-1",
         images: [SAMPLE_IMAGE_BASE64],
@@ -653,7 +655,7 @@ async function runTests() {
     console.log("\n--- [Test 11] Workflow 6 Fallback / Dynamic Tool Combo ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -672,7 +674,7 @@ async function runTests() {
         });
       });
 
-      const res = await runAgentTask({
+      const res = await runWorkflowTask({
         message: "Count the words in this explanation: Centrifugal pumps generate head via impeller kinetic energy transfer.",
         userId: "test-eng-1",
       });
@@ -693,7 +695,7 @@ async function runTests() {
     {
       // Chat A: Visual task with image attached
       let chatAStep = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         chatAStep++;
         if (chatAStep === 1) {
           return JSON.stringify({
@@ -711,7 +713,7 @@ async function runTests() {
         });
       });
 
-      const resA = await runAgentTask({
+      const resA = await runWorkflowTask({
         message: "Analyze this image.",
         chatId: "chat-isolation-A",
         userId: "user-iso",
@@ -726,7 +728,7 @@ async function runTests() {
       // Chat B: Unrelated text math question in a brand new chat
       let chatBStep = 0;
       let chatBReceivedImages = null;
-      agentGraphService.setAgentBrainLlmClient(async (messages) => {
+      workflowGraphService.setAgentBrainLlmClient(async (messages) => {
         chatBStep++;
         const userPrompt = messages.find((m) => m.role === "user")?.content || "";
         chatBReceivedImages = userPrompt.includes("data:image");
@@ -746,7 +748,7 @@ async function runTests() {
         });
       });
 
-      const resB = await runAgentTask({
+      const resB = await runWorkflowTask({
         message: "What is 25 * 40?",
         chatId: "chat-isolation-B",
         userId: "user-iso",
@@ -769,7 +771,7 @@ async function runTests() {
     console.log("\n--- [Test 13] Workflow Multi-Tool: Retrieval + Unit Converter ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -821,7 +823,7 @@ async function runTests() {
     console.log("\n--- [Test 14] Workflow Multi-Tool: Retrieval + Calculator + Unit Converter ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -883,7 +885,7 @@ async function runTests() {
     console.log("\n--- [Test 15] Workflow Multi-Tool: Vision + Calculator ---");
     {
       let stepCount = 0;
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         stepCount++;
         if (stepCount === 1) {
           return JSON.stringify({
@@ -934,7 +936,7 @@ async function runTests() {
     // ───────────────────────────────────────────────────────────────────────────
     console.log("\n--- [Test 16] Endpoint Verification: POST /agent ---");
     {
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         return JSON.stringify({
           action: "final",
           reason: "Direct response from simple agent.",
@@ -968,7 +970,7 @@ async function runTests() {
     // ───────────────────────────────────────────────────────────────────────────
     console.log("\n--- [Test 17] Endpoint Verification: POST /workflow ---");
     {
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         return JSON.stringify({
           workflow: "general",
           action: "final",
@@ -1036,7 +1038,7 @@ async function runTests() {
     // ───────────────────────────────────────────────────────────────────────────
     console.log("\n--- [Test 19] Streaming Verification: POST /workflow ---");
     {
-      agentGraphService.setAgentBrainLlmClient(async () => {
+      workflowGraphService.setAgentBrainLlmClient(async () => {
         return JSON.stringify({
           workflow: "general",
           action: "final",
@@ -1065,10 +1067,95 @@ async function runTests() {
       pass("Test 19 passed: POST /workflow streaming delivers SSE chunks (workflow_start, workflow_complete with workflow type)");
     }
 
+    // ───────────────────────────────────────────────────────────────────────────
+    // TEST 20: Provided values in task -> select calculation workflow, skip retrieval
+    // ───────────────────────────────────────────────────────────────────────────
+    console.log("\n--- [Test 20] Provided Values Task: Calculation Workflow Selection ---");
+    {
+      let stepCount = 0;
+      workflowGraphService.setAgentBrainLlmClient(async () => {
+        stepCount++;
+        if (stepCount === 1) {
+          return JSON.stringify({
+            workflow: "calculation",
+            action: "tool",
+            tool: "calculator",
+            reason: "Calculate differential pressure: 7.8 - 2.4",
+            input: { expression: "7.8 - 2.4" },
+          });
+        }
+        return JSON.stringify({
+          workflow: "calculation",
+          action: "final",
+          reason: "Calculation complete.",
+          answer: "The pressure differential across the pump is 5.4 bar.",
+        });
+      });
+
+      const res = await runWorkflowTask({
+        message: "According to the retrieved equipment data, the pump has a suction pressure of 2.4 bar and a discharge pressure of 7.8 bar. What is the pressure differential across the pump?",
+        userId: "test-eng-1",
+      });
+
+      assert.strictEqual(res.success, true);
+      assert.strictEqual(res.workflow?.type, WORKFLOW_TYPES.CALCULATION);
+      assert.strictEqual(res.steps.length, 1);
+      assert.strictEqual(res.steps[0].toolName, "calculator");
+      assert.strictEqual(res.steps[0].input.expression, "7.8 - 2.4");
+      assert.strictEqual(res.steps[0].observation.value, 5.4);
+      assert.ok(res.response.includes("5.4"));
+      const toolsCalled = res.steps.map((s) => s.toolName);
+      assert.ok(!toolsCalled.includes("retrieve_information"), "Must not call retrieve_information when values are in prompt");
+      pass("Test 20 passed: When values are provided in prompt, calculation workflow is selected and calculator is invoked without retrieval");
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────
+    // TEST 21: Brain mistakenly suggests retrieve_information -> steered to calculator directly
+    // ───────────────────────────────────────────────────────────────────────────
+    console.log("\n--- [Test 21] Steer Mistaken Retrieval to Calculator ---");
+    {
+      let stepCount = 0;
+      workflowGraphService.setAgentBrainLlmClient(async () => {
+        stepCount++;
+        if (stepCount === 1) {
+          return JSON.stringify({
+            workflow: "knowledge_retrieval",
+            action: "tool",
+            tool: "retrieve_information",
+            reason: "Looking up pump info",
+            input: { query: "pump pressure" },
+          });
+        }
+        return JSON.stringify({
+          workflow: "calculation",
+          action: "final",
+          reason: "Final answer after calculation.",
+          answer: "The pressure differential is 5.4 bar.",
+        });
+      });
+
+      const res = await runWorkflowTask({
+        message: "According to the retrieved equipment data, the pump has a suction pressure of 2.4 bar and a discharge pressure of 7.8 bar. What is the pressure differential across the pump?",
+        userId: "test-eng-1",
+      });
+
+      assert.strictEqual(res.success, true);
+      assert.strictEqual(res.workflow?.type, WORKFLOW_TYPES.CALCULATION);
+      assert.strictEqual(res.steps.length, 1);
+      assert.strictEqual(res.steps[0].toolName, "calculator");
+      assert.strictEqual(res.steps[0].input.expression, "7.8 - 2.4");
+      assert.strictEqual(res.steps[0].observation.value, 5.4);
+      assert.ok(res.response.includes("5.4"));
+      pass("Test 21 passed: Task analysis steers mistaken retrieval directly to calculator when all values are provided in request");
+    }
+
     console.log("\n================================================================================");
     console.log(`ALL ${testsPassed} INDUSTRIAL WORKFLOW ACCEPTANCE TESTS PASSED!`);
     console.log("================================================================================");
   } finally {
+    workflowGraphService.resetAgentBrainLlmClient();
+    workflowGraphService.resetCoderLlmClient();
+    workflowGraphService.resetVisionLlmClient();
     agentGraphService.resetAgentBrainLlmClient();
     agentGraphService.resetCoderLlmClient();
     agentGraphService.resetVisionLlmClient();
