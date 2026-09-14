@@ -112,14 +112,39 @@ TOOL SELECTION AND MULTI-TOOL POLICY:
     - Workflow: Vision extracts raw parameters/measurements -> Calculator performs arithmetic -> Unit Converter converts units -> Final Answer.
     - Specialist tools are bounded workers. Never pass downstream calculation or conversion instructions to the Vision Tool.
 
-11. TOOL OUTPUT TRUST:
+11. CODING TOOL POLICY (coding):
+    - Use when the user explicitly requests generating, writing, implementing, refactoring, or debugging code, functions, algorithms, or scripts.
+    - Powered by specialized Qwen2.5-Coder.
+    - Input parameters:
+      * "task" (string, REQUIRED): Clear description of the programming task or function to write/debug.
+      * "language" (string, optional): Target programming language (e.g. 'python', 'javascript', 'java', 'cpp', 'sh').
+    - Do NOT use for conceptual explanations without code generation (e.g. 'Explain what an API is').
+    - Example: {"action": "tool", "tool": "coding", "reason": "Write Python leap year verification function", "input": {"task": "Write a Python function to check whether a year is a leap year", "language": "python"}}
+
+12. SECURE SANDBOX CODE EXECUTION (execute_code):
+    - Use when the user explicitly requests executing, running, testing, or showing the output/result of code or scripts.
+    - Runs in an isolated container sandbox with zero host access.
+    - Input parameters:
+      * "code" (string, REQUIRED): The source code to execute.
+      * "language" (string, optional): Language runtime ('python', 'javascript', or 'sh', default: 'python').
+    - Example: {"action": "tool", "tool": "execute_code", "reason": "Execute Python leap year script to obtain output", "input": {"code": "def is_leap(y):\n  return (y%4==0 and y%100!=0) or (y%400==0)\nprint(is_leap(2024))", "language": "python"}}
+
+13. CODING + SANDBOX EXECUTION WORKFLOW:
+    - When the user asks to write/create code AND run/execute it to show the output (e.g. "write python code for leap year and execute it to provide the output"):
+      1. Step 1: Call "coding" with the task to generate the code.
+      2. Step 2: Call "execute_code" passing the generated code from the coding tool observation.
+      3. Step 3: Return "final" providing the code and the verified execution output.
+
+14. TOOL OUTPUT TRUST:
     - Treat specialized tool output as authoritative for that operation.
     - Calculator output must be used for arithmetic.
     - Unit Converter output must be used for unit conversion.
     - Retrieval output must be used for retrieved factual values.
+    - Coding output must be used for generated code.
+    - Sandbox output must be used for execution results.
     - Do not replace a tool result with an independently generated value.
 
-12. CANONICAL TOOL SELECTION EXAMPLES:
+15. CANONICAL TOOL SELECTION EXAMPLES:
     - Example 1: "Calculate 25 × 4." -> Calculator only.
     - Example 2: "Convert 100 psi to bar." -> Unit Converter only.
     - Example 3: "What is the suction pressure of P-204?" -> Retrieval only.
@@ -127,20 +152,23 @@ TOOL SELECTION AND MULTI-TOOL POLICY:
     - Example 5: "What is the discharge pressure of P-204 in psi?" -> Retrieval -> Unit Converter.
     - Example 6: "Calculate the pressure differential of P-204 and give the result in psi." -> Retrieval -> Calculator -> Unit Converter.
     - Example 7: "Read the pressure values from this image, calculate the differential, and convert it to psi." -> Vision -> Calculator -> Unit Converter.
+    - Example 8: "Write a Python function to check for leap years." -> Coding only.
+    - Example 9: "Write a Python script for checking a leap year and execute it to provide the output." -> Coding -> Execute_Code -> Final Answer.
 
-13. IMPORTANT RULE:
+16. IMPORTANT RULE:
     - Never avoid a specialized tool merely because the operation is simple.
     - Simple arithmetic still requires Calculator when Calculator is available.
     - Simple unit conversion still requires Unit Converter when Unit Converter is available.
+    - Writing code requires Coding (Qwen2.5-Coder); running code requires Execute_Code.
     - The LLM is responsible for understanding the task, selecting and ordering tools, passing inputs, and synthesizing the final response.
-    - The specialized tools are responsible for factual lookup (retrieval), arithmetic (calculator), unit conversion (unit converter), and visual extraction (vision).
+    - The specialized tools are responsible for factual lookup (retrieval), arithmetic (calculator), unit conversion (unit converter), code generation (coding), code execution (execute_code), and visual extraction (vision).
     - The agent behaves as an orchestrator, not as a replacement for specialized tools.
 
 Strict Constraints:
 1. Return ONLY the raw JSON object. Never include markdown code fences, comments, or thinking tags.
 2. action must be either "tool" or "final".
 3. The tool name MUST be one of the registered tools provided in the prompt.
-4. Input arguments must strictly adhere to the tool's schema.
+4. Input arguments must strictly adhere to the tool's schema. When calling a tool, ALWAYS provide required parameters in "input" (e.g. {"task": "..."} for coding, {"code": "..."} for execute_code).
 5. Never execute or invent shell, filesystem, or network commands.`;
 
 /**
@@ -489,9 +517,31 @@ export function parseBrainOutput(rawOutput) {
       return { valid: false, error: 'Missing or invalid "tool" name.', raw: rawOutput };
     }
 
-    const input = parsed.input !== undefined && parsed.input !== null ? parsed.input : {};
-    if (typeof input !== "object" || Array.isArray(input)) {
-      return { valid: false, error: 'Tool "input" must be an object.', raw: rawOutput };
+    let input = {};
+    if (parsed.input && typeof parsed.input === "object" && !Array.isArray(parsed.input)) {
+      input = { ...parsed.input };
+    } else if (parsed.parameters && typeof parsed.parameters === "object" && !Array.isArray(parsed.parameters)) {
+      input = { ...parsed.parameters };
+    } else if (parsed.args && typeof parsed.args === "object" && !Array.isArray(parsed.args)) {
+      input = { ...parsed.args };
+    } else if (parsed.arguments && typeof parsed.arguments === "object" && !Array.isArray(parsed.arguments)) {
+      input = { ...parsed.arguments };
+    }
+
+    // Also pick up known tool parameters if the model placed them directly at the root level of the JSON
+    const knownParams = [
+      "task", "language", "codeContext",
+      "code", "timeoutMs",
+      "query", "documentId", "sourceScope", "limit",
+      "expression", "expr",
+      "value", "fromUnit", "toUnit", "from", "to", "val",
+      "prompt", "image",
+      "text", "operation", "options",
+    ];
+    for (const param of knownParams) {
+      if (parsed[param] !== undefined && input[param] === undefined) {
+        input[param] = parsed[param];
+      }
     }
 
     const toolReason =

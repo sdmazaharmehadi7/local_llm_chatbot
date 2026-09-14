@@ -1605,6 +1605,159 @@ async function runTests() {
     pass("TEST 8.8 passed: Simple operations strictly invoke specialized tools (zero mental math) and trust authoritative tool outputs");
   }
 
+  // TEST 8.9: Tool input auto-healing: Qwen3 calls 'coding' with empty {} input (fixes "Invalid input: expected string, received undefined at task")
+  {
+    let brainCallCount = 0;
+    agentGraphService.setAgentBrainLlmClient(async () => {
+      brainCallCount++;
+      if (brainCallCount === 1) {
+        // Simulates model returning empty input {} exactly as observed in user issue
+        return JSON.stringify({
+          action: "tool",
+          tool: "coding",
+          reason: "Executing tool: coding",
+          input: {},
+        });
+      }
+      return JSON.stringify({
+        action: "final",
+        reason: "Provide final response with leap year code.",
+        answer: "Here is the Python leap year verification code:\n\n```python\ndef is_leap_year(year):\n    return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)\n```",
+      });
+    });
+
+    let coderReceivedTask = null;
+    let coderReceivedLang = null;
+    agentGraphService.setCoderLlmClient(async (messages) => {
+      const userMsg = messages.find((m) => m.role === "user");
+      coderReceivedTask = userMsg?.content || "";
+      return "```python\ndef is_leap_year(year):\n    return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)\n```";
+    });
+
+    const result = await runAgentTask({
+      message: "write a small Python code for checking a leap year and execute it to provide the output",
+      userId: "test-user-coding-heal",
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.steps.length, 1);
+    assert.strictEqual(result.steps[0].toolName, "coding");
+    assert.strictEqual(result.steps[0].status, "completed");
+    assert.ok(result.steps[0].input.task.includes("leap year"));
+    assert.strictEqual(result.steps[0].input.language, "python");
+    assert.strictEqual(result.steps[0].observation.success, true);
+    assert.ok(result.response.includes("is_leap_year"));
+
+    pass("TEST 8.9 passed: Tool input auto-healing recovers 'task' and 'language' from user request when model provides empty {}");
+  }
+
+  // TEST 8.10: Root-level parameters parsed by parseBrainOutput into decision.input
+  {
+    let brainCallCount = 0;
+    agentGraphService.setAgentBrainLlmClient(async () => {
+      brainCallCount++;
+      if (brainCallCount === 1) {
+        // Simulates model placing parameters directly at root level of JSON
+        return JSON.stringify({
+          action: "tool",
+          tool: "coding",
+          reason: "Write Python leap year checker",
+          task: "Implement is_leap_year function in Python",
+          language: "python",
+        });
+      }
+      return JSON.stringify({
+        action: "final",
+        answer: "Completed.",
+      });
+    });
+
+    agentGraphService.setCoderLlmClient(async () => {
+      return "def is_leap_year(year): return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)";
+    });
+
+    const result = await runAgentTask({
+      message: "Write a leap year checker",
+      userId: "test-user-root-params",
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.steps[0].toolName, "coding");
+    assert.strictEqual(result.steps[0].input.task, "Implement is_leap_year function in Python");
+    assert.strictEqual(result.steps[0].input.language, "python");
+
+    pass("TEST 8.10 passed: Parameters placed at JSON root level are reliably captured into decision.input");
+  }
+
+  // TEST 8.11: Multi-tool chain: coding -> execute_code with auto-healing of missing code
+  {
+    let brainCallCount = 0;
+    agentGraphService.setAgentBrainLlmClient(async () => {
+      brainCallCount++;
+      if (brainCallCount === 1) {
+        return JSON.stringify({
+          action: "tool",
+          tool: "coding",
+          input: {
+            task: "Write a small Python code to check leap year",
+            language: "python",
+          },
+        });
+      }
+      if (brainCallCount === 2) {
+        // Model calls execute_code with empty input {} - auto-healer must recover code from coding observation
+        return JSON.stringify({
+          action: "tool",
+          tool: "execute_code",
+          input: {},
+        });
+      }
+      return JSON.stringify({
+        action: "final",
+        answer: "The Python leap year code was generated and verified in the sandbox with output: 2024 is leap year: True",
+      });
+    });
+
+    agentGraphService.setCoderLlmClient(async () => {
+      return "```python\ndef is_leap(y):\n    return (y % 4 == 0 and y % 100 != 0) or (y % 400 == 0)\nprint('2024 is leap year:', is_leap(2024))\n```";
+    });
+
+    let sandboxCalled = false;
+    let sandboxCodeReceived = null;
+    const mockRunner = async ({ code, language }) => {
+      sandboxCalled = true;
+      sandboxCodeReceived = code;
+      return {
+        success: true,
+        exitCode: 0,
+        stdout: "2024 is leap year: True\n",
+        stderr: "",
+        executionTimeMs: 120,
+        timedOut: false,
+        language,
+        sandbox: { isolated: true },
+      };
+    };
+
+    const result = await runAgentTask({
+      message: "write a small Python code for checking a leap year and execute it to provide the output",
+      userId: "test-user-code-chain",
+      sandboxRunner: mockRunner,
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.steps.length, 2);
+    assert.strictEqual(result.steps[0].toolName, "coding");
+    assert.strictEqual(result.steps[1].toolName, "execute_code");
+    assert.strictEqual(result.steps[1].status, "completed");
+    assert.strictEqual(sandboxCalled, true);
+    assert.ok(sandboxCodeReceived.includes("is_leap(2024)"));
+    assert.ok(!sandboxCodeReceived.startsWith("```"), "Markdown code fences must be stripped");
+    assert.ok(result.response.includes("True"));
+
+    pass("TEST 8.11 passed: Multi-tool chain coding -> execute_code auto-heals code from previous step and strips markdown fences");
+  }
+
   agentGraphService.resetAgentBrainLlmClient();
   agentGraphService.resetCoderLlmClient();
 

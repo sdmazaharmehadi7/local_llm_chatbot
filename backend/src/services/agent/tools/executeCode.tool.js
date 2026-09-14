@@ -69,6 +69,13 @@ export const executeCodeTool = {
         };
       }
 
+      // If code is wrapped in markdown code fences, cleanly extract the code body
+      let cleanCode = code.trim();
+      const codeFenceMatch = cleanCode.match(/^```(?:[a-zA-Z0-9_+#.-]+)?\s*\n([\s\S]*?)\n```$/);
+      if (codeFenceMatch) {
+        cleanCode = codeFenceMatch[1].trim();
+      }
+
       // Execute via sandbox service (or custom runner in context/service)
       const runner = typeof context.sandboxRunner === "function"
         ? context.sandboxRunner
@@ -76,10 +83,10 @@ export const executeCodeTool = {
 
       let result;
       if (runner) {
-        result = await runner({ code: code.trim(), language, timeoutMs });
+        result = await runner({ code: cleanCode, language, timeoutMs });
       } else {
         result = await sandboxService.executeCode({
-          code: code.trim(),
+          code: cleanCode,
           language,
           timeoutMs,
         });

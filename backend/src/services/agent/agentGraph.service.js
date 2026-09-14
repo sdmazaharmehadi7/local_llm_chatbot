@@ -83,6 +83,103 @@ export function normalizeActionFingerprint(toolName, input = {}) {
 }
 
 /**
+ * Normalize and auto-heal tool input arguments based on context and state.
+ * Prevents missing/undefined required arguments from failing structured tool schemas.
+ *
+ * @param {string} toolName
+ * @param {object} rawInput
+ * @param {object} state
+ * @returns {object}
+ */
+export function normalizeToolInput(toolName, rawInput = {}, state = {}) {
+  const input = typeof rawInput === "object" && rawInput !== null && !Array.isArray(rawInput)
+    ? { ...rawInput }
+    : {};
+  const normTool = String(toolName || "").trim().toLowerCase();
+  const userRequest = state?.userRequest || "";
+
+  if (normTool === "coding") {
+    // 1. Ensure task is a non-empty string
+    if (!input.task || typeof input.task !== "string" || !input.task.trim()) {
+      const altTask = input.prompt || input.instruction || input.description || input.query || input.codeContext;
+      input.task = (typeof altTask === "string" && altTask.trim())
+        ? altTask.trim()
+        : (userRequest.trim() || "Generate code implementation");
+    }
+
+    // 2. Ensure language is populated if detectable
+    if (!input.language || typeof input.language !== "string" || !input.language.trim()) {
+      const combinedText = `${input.task} ${userRequest}`;
+      const langMatch = combinedText.match(/\b(python|javascript|typescript|java|cpp|c\+\+|c#|csharp|go|rust|ruby|php|swift|bash|shell|sh|sql|html|css)\b/i);
+      if (langMatch) {
+        input.language = langMatch[1].toLowerCase();
+      }
+    }
+  } else if (normTool === "execute_code") {
+    // 1. Ensure code is a non-empty string
+    if (!input.code || typeof input.code !== "string" || !input.code.trim()) {
+      if (typeof input.task === "string" && input.task.trim()) {
+        input.code = input.task.trim();
+      } else {
+        // Fallback: look back through previous steps for code produced by coding tool or code blocks
+        const steps = Array.isArray(state?.steps) ? state.steps : [];
+        for (let i = steps.length - 1; i >= 0; i--) {
+          const step = steps[i];
+          const sTool = step.toolName || step.tool;
+          const obs = step.observation || step.output;
+          if (sTool === "coding" && obs) {
+            if (typeof obs === "object" && obs.code) {
+              input.code = obs.code;
+              if (!input.language && obs.language) {
+                input.language = obs.language;
+              }
+              break;
+            } else if (typeof obs === "string") {
+              const codeMatch = obs.match(/```(?:[a-zA-Z0-9_+#.-]+)?\s*\n([\s\S]*?)\n```/);
+              if (codeMatch && codeMatch[1]) {
+                input.code = codeMatch[1].trim();
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 2. Strip markdown code fences if wrapped
+    if (typeof input.code === "string") {
+      const codeStr = input.code.trim();
+      const fenceMatch = codeStr.match(/^```(?:[a-zA-Z0-9_+#.-]+)?\s*\n([\s\S]*?)\n```$/);
+      if (fenceMatch && fenceMatch[1]) {
+        input.code = fenceMatch[1].trim();
+      }
+    }
+
+    if (!input.language || typeof input.language !== "string" || !input.language.trim()) {
+      input.language = "python";
+    }
+  } else if (normTool === "retrieve_information") {
+    if (!input.query || typeof input.query !== "string" || !input.query.trim()) {
+      input.query = userRequest.trim() || "knowledge lookup";
+    }
+  } else if (normTool === "vision") {
+    if (!input.prompt || typeof input.prompt !== "string" || !input.prompt.trim()) {
+      input.prompt = userRequest.trim() || "Visual inspection of the image.";
+    }
+  } else if (normTool === "calculator") {
+    if (!input.expression && input.expr) {
+      input.expression = String(input.expr);
+    }
+  } else if (normTool === "unit_converter") {
+    if (!input.fromUnit && input.from) input.fromUnit = String(input.from);
+    if (!input.toUnit && input.to) input.toUnit = String(input.to);
+    if (input.value === undefined && input.val !== undefined) input.value = input.val;
+  }
+
+  return input;
+}
+
+/**
  * LangGraph State Annotation Schema
  */
 export const AgentStateAnnotation = Annotation.Root({
@@ -247,6 +344,9 @@ class AgentGraphService {
         workspaceId: state.workspaceId,
         retriever,
         coderClient: effectiveCoderClient,
+        sandboxRunner,
+        visionClient: effectiveVisionClient,
+        images: state.images || [],
       });
 
       const formattedTools = formatAvailableTools(
@@ -261,10 +361,13 @@ class AgentGraphService {
               { description: v?.description || "" },
             ])
           );
+          const required = Object.entries(shape)
+            .filter(([_, v]) => (typeof v?.isOptional === "function" ? !v.isOptional() : true))
+            .map(([k]) => k);
           return {
             name: t.name,
             description: t.description,
-            inputSchema: { properties },
+            inputSchema: { properties, required },
           };
         })
       );
@@ -359,6 +462,14 @@ Return ONLY a valid JSON object matching the Response Schema.`;
 
       let decision = parsed.decision;
 
+      if (decision.action === AGENT_ACTION_TYPES.TOOL) {
+        decision.input = normalizeToolInput(
+          decision.tool || decision.toolName,
+          decision.input,
+          state
+        );
+      }
+
       // Validate tool selection policy against unneeded tool calls
       let policyValidation = validateToolSelectionPolicy(decision, {
         userRequest: state.userRequest,
@@ -380,13 +491,21 @@ Return ONLY a valid JSON object matching the Response Schema.`;
           const retryOutput = await this._callBrainLlm(retryMessages);
           const retryParsed = parseBrainOutput(retryOutput);
           if (retryParsed.valid) {
-            const retryValidation = validateToolSelectionPolicy(retryParsed.decision, {
+            const retryDecision = { ...retryParsed.decision };
+            if (retryDecision.action === AGENT_ACTION_TYPES.TOOL) {
+              retryDecision.input = normalizeToolInput(
+                retryDecision.tool || retryDecision.toolName,
+                retryDecision.input,
+                state
+              );
+            }
+            const retryValidation = validateToolSelectionPolicy(retryDecision, {
               userRequest: state.userRequest,
               steps: state.steps,
               images: state.images || [],
             });
             if (retryValidation.valid) {
-              decision = retryParsed.decision;
+              decision = retryDecision;
               policyValidation = retryValidation;
             }
           }
@@ -448,6 +567,10 @@ Return ONLY a valid JSON object matching the Response Schema.`;
     const toolsNode = async (state) => {
       const decision = state.currentAction;
       const toolName = decision?.tool || decision?.toolName;
+
+      if (decision && toolName) {
+        decision.input = normalizeToolInput(toolName, decision.input, state);
+      }
 
       if (state.toolExecutionCount >= AGENT_LIMITS.MAX_TOOL_EXECUTIONS) {
         const errMsg = `Execution limit exceeded: maximum allowed tool executions (${AGENT_LIMITS.MAX_TOOL_EXECUTIONS}) reached.`;

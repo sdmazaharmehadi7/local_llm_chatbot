@@ -44,6 +44,9 @@ export async function runAgentTask({
   workspaceId = "default",
   options = {},
   images = [],
+  coderClient,
+  sandboxRunner,
+  visionClient,
 }) {
   const startTime = Date.now();
 
@@ -112,9 +115,9 @@ export async function runAgentTask({
   const app = agentGraphService.buildGraph({
     onProgress: emitProgress,
     retriever: options.retriever,
-    coderClient: options.coderClient,
-    sandboxRunner: options.sandboxRunner,
-    visionClient: options.visionClient,
+    coderClient: coderClient || options.coderClient,
+    sandboxRunner: sandboxRunner || options.sandboxRunner,
+    visionClient: visionClient || options.visionClient,
     signal: options.signal,
   });
 
