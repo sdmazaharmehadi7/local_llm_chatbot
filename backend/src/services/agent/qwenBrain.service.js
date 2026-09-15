@@ -18,29 +18,18 @@ import { AGENT_ACTION_TYPES, WORKFLOW_TYPES } from "./agent.types.js";
 export const AGENT_BRAIN_MODEL = "qwen3:8b";
 
 export const AGENT_BRAIN_SYSTEM_PROMPT = `You are the decision-making brain of a local sovereign agentic AI system.
-You do not execute tools yourself.
-You can only request tools from the provided tool registry.
-Return exactly one structured JSON action.
-Return final when the task is complete or can be answered directly.
-Never invent tools.
-Never output hidden reasoning.
+You do not execute tools yourself. You can only request tools from the registered tool catalog.
+Return exactly one structured JSON action per turn.
+Return "final" when the task is complete or can be answered directly.
+Never invent tools. Never output hidden reasoning.
 
 Six Controlled Industrial Workflows & Execution Patterns:
-When planning the task, identify which execution pattern applies:
-1. "knowledge_retrieval" (Workflow 1): Factual information from organizational Knowledge Base / documents only (Qwen3 -> Retrieval -> Qwen3 -> Final).
-2. "retrieval_calculation" (Workflow 2): Factual values retrieved from Knowledge Base and subsequently calculated (Qwen3 -> Retrieval -> Qwen3 -> Calculator -> Qwen3 -> Final).
-3. "vision_calculation" (Workflow 3): Numerical info extracted from an image and verified/calculated (Qwen3 -> Vision -> Qwen3 -> Calculator -> Qwen3 -> Final).
-4. "vision_knowledge" (Workflow 4): Image analysis combined with organizational Knowledge Base information (Qwen3 -> Vision -> Qwen3 -> Retrieval -> Qwen3 -> Final).
-5. "coding_sandbox" (Workflow 5): Code generation and container execution (Qwen3 -> Coding -> Sandbox -> Qwen3 -> Final, with max 2 repair attempts on execution failure).
-6. "general" (Workflow 6): Fallback / dynamic multi-tool reasoning or direct conceptual explanation when no predefined workflow matches (Qwen3 -> dynamic tools / direct -> Final).
-
-Workflow Selection Priority:
-1. Does the task require code generation + execution? -> "coding_sandbox"
-2. Does the task require image analysis + calculation? -> "vision_calculation"
-3. Does the task require image analysis + organizational knowledge? -> "vision_knowledge"
-4. Does the task require Knowledge Base information + calculation? -> "retrieval_calculation"
-5. Does the task require Knowledge Base information only? -> "knowledge_retrieval"
-6. Otherwise -> "general" (fallback / existing agent loop)
+1. "knowledge_retrieval" (Workflow 1): Factual info from Knowledge Base/documents only (Qwen3 -> Retrieval -> Qwen3 -> Final).
+2. "retrieval_calculation" (Workflow 2): Factual values from documents then calculated (Qwen3 -> Retrieval -> Qwen3 -> Calculator -> Qwen3 -> Final).
+3. "vision_calculation" (Workflow 3): Numerical info extracted from image then verified/calculated (Qwen3 -> Vision -> Qwen3 -> Calculator -> Qwen3 -> Final).
+4. "vision_knowledge" (Workflow 4): Image analysis combined with Knowledge Base facts (Qwen3 -> Vision -> Qwen3 -> Retrieval -> Qwen3 -> Final).
+5. "coding_sandbox" (Workflow 5): Code generation and container execution (Qwen3 -> Coding -> Sandbox -> Qwen3 -> Final, with max 2 repair attempts on failure).
+6. "general" (Workflow 6): Fallback / dynamic multi-tool reasoning or direct conceptual explanation (Qwen3 -> dynamic tools / direct -> Final).
 
 Response Schema:
 If a tool is needed:
@@ -52,7 +41,7 @@ If a tool is needed:
   "input": { ... }
 }
 
-If task is complete or can be answered directly without tools:
+If task is complete or can be answered directly:
 {
   "workflow": "knowledge_retrieval" | "retrieval_calculation" | "vision_calculation" | "vision_knowledge" | "coding_sandbox" | "general",
   "action": "final",
@@ -60,62 +49,32 @@ If task is complete or can be answered directly without tools:
   "answer": "<final answer for user with citations and calculation steps>"
 }
 
-Iterative Multi-Step Reasoning Policy:
-1. ITERATIVE EXECUTION: The agent operates in an iterative loop: Tool -> Observation -> Next Action. Do NOT assume that one tool call is enough. After every tool execution, evaluate whether the user's question has been completely answered.
-2. DISTINGUISH CAPABILITIES:
-   - Information Retrieval: Use "retrieve_information" to search and retrieve facts, procedures, limits, and data from documents.
-   - Computation: Use "calculator" for any arithmetic, percentages, differentials, ratios, or formulas.
-   - Final Response: Return "final" only when all required information has been gathered and all computations/comparisons are completed.
-3. MULTI-PART QUESTION DECOMPOSITION & SEQUENTIAL RETRIEVAL:
-   - When a user request requires multiple distinct pieces of information (e.g., "Using Value A and Limit B, calculate C"):
-     * First retrieve Value A using a focused query (e.g. "drive-end bearing vibration reading").
-     * Inspect the returned excerpt to extract Value A.
-     * If Limit B is still missing, call "retrieve_information" with a NEW, FOCUSED query specifically for Limit B (e.g. "ISO 10816-3 limit Zone B/C boundary").
-     * CRITICAL: NEVER repeat an identical retrieval query that was already executed in a previous step!
-4. ARITHMETIC & CALCULATOR POLICY:
-   - Call "calculator" whenever mathematical computation or arithmetic is required (e.g. percentage of allowable limit, pressure differential, flow reductions).
-   - Once all required numerical values are retrieved (e.g. vibration = 3.1 and limit = 4.5), DO NOT continue retrieving! You MUST transition to "calculator" with the numerical expression (e.g. "(3.1 / 4.5) * 100").
-   - Never perform mental arithmetic when calculator is available.
-5. PROMPT ISOLATION & TOOL-SPECIFIC INSTRUCTIONS:
-   - You are the SOLE Agent Brain and orchestrator. Specialist tools (vision, calculator, coding) are bounded workers, NOT autonomous agents. They must NEVER receive entire multi-tool user tasks or downstream instructions.
-   - When calling "vision": Generate a fresh, task-specific visual instruction tailored to the exact visual perception needed (e.g. image description, OCR, table reading, or extracting raw parameters/formulas/displayed answers). NEVER pass downstream tasks (such as "use calculator", "verify each calculation", or "calculate percentage error") to the vision tool!
-   - When calling "calculator": Formulate mathematical expressions derived from retrieved documents or visual extractions (e.g. "22 * 9550 / 960"). The calculator operates strictly on numerical expressions and never receives images.
-   - When calling "coding": Provide programming tasks only. NEVER pass image context or visual data to Qwen2.5-Coder.
-6. VISUAL EXTRACTION & CALCULATION VERIFICATION:
-   - When a user asks to inspect an image and verify, check, or perform calculations shown in it (e.g. "Extract the values from all 3 examples and verify each calculation using the calculator"):
-     * Step 1: Call "vision" with a task-specific instruction to extract visible parameters, formulas, and displayed answers/results exactly as shown. Vision extracts raw data ONLY and MUST NOT calculate or verify arithmetic.
-     * Step 2: Once Vision returns the raw extracted values (e.g. P = 22 kW, N = 960 RPM, displayed answer = 218.9 Nm), you (Qwen3) independently determine the required arithmetic expression (e.g. "22 * 9550 / 960") and call "calculator".
-     * Step 3: Calculator computes the exact numerical result (e.g. 218.85416666666666).
-     * Step 4: Compare the calculated value against the image's displayed answer, reason over rounding and tolerances, and synthesize the final answer.
-7. MULTI-STEP WORKFLOW ORDER:
-   - When a request requires both document lookup and calculation: FIRST retrieve the data using "retrieve_information", inspect the returned values/tags, and THEN call "calculator" on the numbers.
-   - When a request requires both visual inspection and calculation: FIRST extract values using "vision", inspect the returned data, and THEN call "calculator" on the numbers.
-   - Once all numbers are calculated, return "final" synthesizing the complete answer.
-8. THRESHOLD COMPARISON & PASS/FAIL CRITERIA:
-   - When the user asks a verification question (e.g., "Does it pass?"): after calculating the result, compare it against the threshold/allowable limit in the final answer (e.g. 68.9% <= 100% -> PASS).
-9. MINIMAL & PURPOSEFUL TOOL USAGE:
-   - If a question is general conversation or conceptual (e.g. "Explain what an API is"), answer directly without tools.
-   - Do not call calculator or text_transform on questions that do not need them.
-   - Use "vision" ONLY when the user's request involves visual analysis of an image, photo, diagram, schematic, chart, or visual document, or when an image is attached. Never call "vision" for text-only questions or when no image is involved.
-   - Use "coding" ONLY for writing, refactoring, or generating code using Qwen2.5-Coder.
-   - Use "execute_code" ONLY when the user explicitly asks to run, execute, or test code in the secure container sandbox. Never execute code on the host machine.
-10. EVIDENCE & CITATIONS:
-   - When returning "final", cite document names, page numbers, instrument/tag identifiers (e.g. PI-102B, bearing tag), and explicit calculation steps.
-11. CODE EXECUTION FAILURE HANDLING & DIAGNOSIS:
-   - When "execute_code" fails (Exit Code != 0, or Stderr/Error present):
-     * CAREFULLY INSPECT the failure details (Exit Code, Stderr, and Error message).
-     * DO NOT blindly call "execute_code" again with the identical failed code!
-     * If the code needs correction, call tool "coding" (Qwen2.5-Coder) with a targeted fix task specifying the exact error and Stderr so the code can be corrected.
-     * After "coding" returns the corrected code, call "execute_code" with the updated code.
-     * Once execution succeeds (Exit Code 0), return "final" summarizing the solution and output.
-     * Retry limit: Do not retry code execution more than 2 times. If execution fails after retry, return "final" diagnosing the error and providing the code.
+Tool Call Input Schemas (Always provide required parameters inside "input"):
+- "coding": { "task": "<required: programming task, implementation, or bug to fix>", "language": "<optional: python|javascript|java|cpp|...>", "codeContext": "<optional: code snippet>" }
+- "execute_code": { "code": "<required: complete source code to run in isolated sandbox>", "language": "<optional: python|javascript|sh, default python>" }
+- "calculator": { "expression": "<required: exact math expression to evaluate e.g. (3.1 / 4.5) * 100>" }
+- "retrieve_information": { "query": "<required: targeted keyword or semantic search query>" }
+- "vision": { "prompt": "<required: visual inspection question or raw extraction instruction>" }
+- "text_transform": { "text": "<required: text content>", "operation": "<required: uppercase|lowercase|word_count|char_count|summarize|trim|reverse>" }
 
-Strict Constraints:
-1. Return ONLY the raw JSON object. Never include markdown code fences, comments, or thinking tags.
-2. action must be either "tool" or "final".
-3. The tool name MUST be one of the registered tools provided in the prompt.
-4. Input arguments must strictly adhere to the tool's schema.
-5. Never execute or invent shell, filesystem, or network commands.`;
+Workflow Execution Rules:
+1. CODING & EXECUTION FLOW (Workflow 5):
+   - When code generation is requested: Call "coding" with input: { "task": "<task description>", "language": "<target language>" }.
+   - When running/executing the generated code: Call "execute_code" with input: { "code": "<generated code>", "language": "<language>" }.
+   - When execution fails (Exit Code != 0): Inspect Stderr/Error, call "coding" with input: { "task": "Fix error: <stderr>", "codeContext": "<failed code>" }, then call "execute_code".
+   - Max 2 execution repairs allowed. If still failing after 2 repairs, return "final" diagnosing the issue.
+2. RETRIEVAL & CALCULATION FLOW:
+   - Retrieve values first using "retrieve_information".
+   - Once values are retrieved, transition immediately to "calculator" with the numerical formula. Never repeat identical retrieval queries.
+3. VISION & EXTRACTION FLOW:
+   - Call "vision" with prompt tailored strictly to visual perception. Never pass downstream calculation or coding instructions to vision.
+   - Once visual values are extracted, transition to "calculator" if mathematical calculation/verification is requested.
+4. COMPLETION DETECTION:
+   - Once all necessary evidence, calculations, or execution results are obtained, return "final" immediately. Do not make redundant tool calls.
+5. CONSTRAINTS:
+   - Return ONLY raw valid JSON. No markdown code fences, comments, or thinking tags.
+   - action must be "tool" or "final".
+   - If question is conceptual/general knowledge (e.g. "Explain what an API is"), answer directly with "final" without tools.`;
 
 /**
  * Format registered tools into a compact specification string.
@@ -193,10 +152,10 @@ export function formatStepHistory(steps = []) {
           : "No relevant documents found matching query.";
 
         const boundedExcerpts =
-          joinedExcerpts.length > 3500 ? `${joinedExcerpts.slice(0, 3500)}... [truncated]` : joinedExcerpts;
+          joinedExcerpts.length > 1200 ? `${joinedExcerpts.slice(0, 1200)}... [see Accumulated Evidence below]` : joinedExcerpts;
 
         return `Step ${idx + 1}:
-  Action: Called tool "retrieve_information" with input ${JSON.stringify(s.input || {})}
+  Action: Called tool "retrieve_information" with query: "${s.input?.query || ""}"
   Observation${statusText}: Retrieved ${results.length || sources.length} relevant excerpts${sourceSummary}
 ${boundedExcerpts}`;
       }
@@ -212,9 +171,9 @@ ${boundedExcerpts}`;
 
       // Format coding tool observations
       if (toolName === "coding" && typeof obs === "object" && obs !== null) {
-        const lang = obs.language || "code";
+        const lang = obs.language || s.input?.language || "code";
         const code = obs.code || "";
-        const boundedCode = code.length > 3500 ? `${code.slice(0, 3500)}... [truncated]` : code;
+        const boundedCode = code.length > 2000 ? `${code.slice(0, 2000)}... [truncated]` : code;
         return `Step ${idx + 1}:
   Action: Called tool "coding" (Qwen2.5-Coder) for task: ${JSON.stringify(s.input?.task || s.input || {})}
   Observation${statusText}: Generated ${lang} solution:
@@ -451,9 +410,49 @@ export function parseBrainOutput(rawOutput) {
       return { valid: false, error: 'Missing or invalid "tool" name.', raw: rawOutput };
     }
 
-    const input = parsed.input !== undefined && parsed.input !== null ? parsed.input : {};
-    if (typeof input !== "object" || Array.isArray(input)) {
-      return { valid: false, error: 'Tool "input" must be an object.', raw: rawOutput };
+    const cleanToolName = toolName.trim().toLowerCase();
+
+    // 1. Extract raw input from various possible locations
+    let rawInput = parsed.input;
+    if (rawInput === undefined || rawInput === null) {
+      if (typeof parsed.arguments === "object" && parsed.arguments !== null && !Array.isArray(parsed.arguments)) {
+        rawInput = parsed.arguments;
+      } else if (typeof parsed.args === "object" && parsed.args !== null && !Array.isArray(parsed.args)) {
+        rawInput = parsed.args;
+      } else if (typeof parsed.parameters === "object" && parsed.parameters !== null && !Array.isArray(parsed.parameters)) {
+        rawInput = parsed.parameters;
+      } else if (typeof parsed.params === "object" && parsed.params !== null && !Array.isArray(parsed.params)) {
+        rawInput = parsed.params;
+      }
+    }
+
+    // 2. If rawInput is string or number, map to tool canonical field
+    if (typeof rawInput === "string" || typeof rawInput === "number") {
+      const strVal = String(rawInput).trim();
+      if (cleanToolName === "calculator") rawInput = { expression: strVal };
+      else if (cleanToolName === "coding") rawInput = { task: strVal };
+      else if (cleanToolName === "execute_code") rawInput = { code: strVal };
+      else if (cleanToolName === "retrieve_information") rawInput = { query: strVal };
+      else if (cleanToolName === "vision") rawInput = { prompt: strVal };
+      else if (cleanToolName === "text_transform") rawInput = { text: strVal };
+      else rawInput = { input: strVal };
+    }
+
+    let inputObj =
+      typeof rawInput === "object" && rawInput !== null && !Array.isArray(rawInput)
+        ? { ...rawInput }
+        : {};
+
+    // 3. Fallback: collect any top-level tool parameters emitted directly on `parsed`
+    const candidateKeys = [
+      "task", "code", "expression", "query", "prompt", "text", "operation",
+      "language", "codeContext", "searchTerm", "sourceScope", "limit",
+      "timeoutMs", "image", "options"
+    ];
+    for (const k of candidateKeys) {
+      if (parsed[k] !== undefined && inputObj[k] === undefined) {
+        inputObj[k] = parsed[k];
+      }
     }
 
     const toolReason =
@@ -462,10 +461,9 @@ export function parseBrainOutput(rawOutput) {
         : `Executing tool: ${toolName.trim()}`;
 
     if (!workflowType) {
-      const cleanTool = toolName.trim().toLowerCase();
-      if (cleanTool === "coding" || cleanTool === "execute_code") {
+      if (cleanToolName === "coding" || cleanToolName === "execute_code") {
         workflowType = WORKFLOW_TYPES.CODING_SANDBOX;
-      } else if (cleanTool === "retrieve_information") {
+      } else if (cleanToolName === "retrieve_information") {
         workflowType = WORKFLOW_TYPES.KNOWLEDGE_RETRIEVAL;
       } else {
         workflowType = WORKFLOW_TYPES.GENERAL;
@@ -480,7 +478,7 @@ export function parseBrainOutput(rawOutput) {
         workflow: workflowType,
         tool: toolName.trim(),
         toolName: toolName.trim(),
-        input,
+        input: inputObj,
         reason: toolReason,
       },
     };
@@ -534,6 +532,24 @@ export function validateToolSelectionPolicy(decision, taskState = {}) {
   const toolName = decision.tool || decision.toolName;
   const userRequest = (taskState.userRequest || "").trim();
   const steps = taskState.steps || [];
+
+  // 0. GENERIC REPEAT/STUCK LOOP PROTECTION:
+  // If the immediately preceding step was a tool execution that failed,
+  // and the proposed action has the identical toolName and identical input, reject it immediately.
+  if (steps.length > 0) {
+    const lastStep = steps[steps.length - 1];
+    const lastTool = lastStep.toolName || lastStep.tool;
+    if (lastStep.status === "failed" && lastTool === toolName) {
+      const lastInput = JSON.stringify(lastStep.input || {});
+      const nextInput = JSON.stringify(decision.input || {});
+      if (lastInput === nextInput) {
+        return {
+          valid: false,
+          reason: `Identical failed tool retry prevented: Tool "${toolName}" already failed with these exact arguments in the previous step. Do not repeat the identical failed call. Provide corrected arguments or return final response.`,
+        };
+      }
+    }
+  }
 
   const hasExplicitCodeGenerationIntent =
     /\b(write|create|implement|generate|code|function|script|class|method|snippet|algorithm|debug|refactor|fix code|compile|syntax)\b/i.test(

@@ -20,7 +20,8 @@ import {
   WORKFLOW_TYPES,
   WORKFLOW_STATUS,
 } from "./agent.types.js";
-import { createAgentTools } from "./agentTools.js";
+import { createAgentTools, zodToJsonSchema } from "./agentTools.js";
+import { isolateVisionPrompt } from "./tools/vision.tool.js";
 import { sendChatToOllama } from "../ollama.service.js";
 import {
   parseBrainOutput,
@@ -35,6 +36,181 @@ import {
 // Disable LangChain tracing/telemetry globally
 if (typeof process !== "undefined" && process.env) {
   process.env.LANGCHAIN_TRACING_V2 = "false";
+}
+
+/**
+ * Normalizes tool arguments according to canonical tool schemas,
+ * resolves field aliases, handles coding -> execute_code handoff,
+ * and validates required parameters before tool execution.
+ *
+ * @param {string} toolName
+ * @param {object} rawInput
+ * @param {object} state
+ * @returns {{ valid: boolean, input?: object, error?: string }}
+ */
+export function normalizeAndValidateToolInput(toolName, rawInput = {}, state = {}) {
+  const normTool = String(toolName || "").trim().toLowerCase();
+  let input = typeof rawInput === "object" && rawInput !== null && !Array.isArray(rawInput)
+    ? { ...rawInput }
+    : {};
+
+  if (normTool === "coding") {
+    let task =
+      input.task ||
+      input.prompt ||
+      input.instruction ||
+      input.codeTask ||
+      input.description ||
+      input.goal ||
+      input.query;
+
+    if ((!task || typeof task !== "string" || !task.trim()) && typeof rawInput === "string" && rawInput.trim()) {
+      task = rawInput.trim();
+    }
+
+    if (!task || typeof task !== "string" || !task.trim()) {
+      return {
+        valid: false,
+        error: "Missing or empty required field 'task' for tool 'coding'.",
+      };
+    }
+
+    const language = input.language || input.lang || input.targetLanguage;
+    const codeContext = input.codeContext || input.context || input.existingCode;
+
+    const normalized = { task: task.trim() };
+    if (language && typeof language === "string" && language.trim()) {
+      normalized.language = language.trim();
+    }
+    if (codeContext && typeof codeContext === "string" && codeContext.trim()) {
+      normalized.codeContext = codeContext.trim();
+    }
+    return { valid: true, input: normalized };
+  }
+
+  if (normTool === "execute_code") {
+    let code = input.code || input.script || input.sourceCode || input.source || input.snippet;
+    let language = input.language || input.lang || input.runtime || "python";
+
+    // Seamless Coding -> Execute_Code Handoff:
+    // If code was not provided directly in the tool call, resolve it from the most recent coding step
+    if (!code || typeof code !== "string" || !code.trim()) {
+      const steps = Array.isArray(state?.steps) ? state.steps : [];
+      for (let i = steps.length - 1; i >= 0; i--) {
+        const step = steps[i];
+        const stepTool = step.toolName || step.tool;
+        if (stepTool === "coding" && step.status === "completed") {
+          const obs = step.observation || step.output;
+          if (obs && typeof obs === "object" && obs.code) {
+            code = obs.code;
+            if (obs.language && (!input.language || input.language === "python")) {
+              language = obs.language;
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    if (!code || typeof code !== "string" || !code.trim()) {
+      return {
+        valid: false,
+        error: "Missing or empty required field 'code' for tool 'execute_code'.",
+      };
+    }
+
+    // Strip markdown code fences if present (e.g. ```python ... ```)
+    let cleanCode = code.trim();
+    const fenceMatch = cleanCode.match(/^```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)\s*```$/);
+    if (fenceMatch) {
+      cleanCode = fenceMatch[1].trim();
+    }
+
+    const normalized = {
+      code: cleanCode,
+      language: typeof language === "string" ? language.trim().toLowerCase() : "python",
+    };
+    if (input.timeoutMs && typeof input.timeoutMs === "number") {
+      normalized.timeoutMs = input.timeoutMs;
+    }
+    return { valid: true, input: normalized };
+  }
+
+  if (normTool === "calculator") {
+    let expression = input.expression || input.expr || input.calculation || input.math || input.formula;
+    if ((!expression || typeof expression !== "string" || !expression.trim()) && typeof rawInput === "string" && rawInput.trim()) {
+      expression = rawInput.trim();
+    }
+
+    if (!expression || typeof expression !== "string" || !expression.trim()) {
+      return {
+        valid: false,
+        error: "Missing or empty required field 'expression' for tool 'calculator'.",
+      };
+    }
+
+    return { valid: true, input: { expression: expression.trim() } };
+  }
+
+  if (normTool === "retrieve_information") {
+    let query = input.query || input.searchTerm || input.search || input.question;
+    if ((!query || typeof query !== "string" || !query.trim()) && typeof rawInput === "string" && rawInput.trim()) {
+      query = rawInput.trim();
+    }
+
+    if (!query || typeof query !== "string" || !query.trim()) {
+      return {
+        valid: false,
+        error: "Missing or empty required field 'query' for tool 'retrieve_information'.",
+      };
+    }
+
+    const normalized = { query: query.trim() };
+    if (input.sourceScope) normalized.sourceScope = input.sourceScope;
+    if (input.limit) normalized.limit = input.limit;
+    if (input.documentId) normalized.documentId = input.documentId;
+    return { valid: true, input: normalized };
+  }
+
+  if (normTool === "vision") {
+    let prompt = input.prompt || input.instruction || input.question || input.task;
+    if ((!prompt || typeof prompt !== "string" || !prompt.trim()) && typeof rawInput === "string" && rawInput.trim()) {
+      prompt = rawInput.trim();
+    } else if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
+      prompt = "Inspect the uploaded image and extract all visible details.";
+    }
+
+    const cleanedPrompt = isolateVisionPrompt(prompt);
+    const normalized = { prompt: cleanedPrompt };
+    if (input.image) normalized.image = input.image;
+    return { valid: true, input: normalized };
+  }
+
+  if (normTool === "text_transform") {
+    const text = input.text || input.content || input.string;
+    const operation = input.operation || input.op || input.mode;
+
+    if (!text || typeof text !== "string") {
+      return {
+        valid: false,
+        error: "Missing or empty required field 'text' for tool 'text_transform'.",
+      };
+    }
+    if (!operation || typeof operation !== "string") {
+      return {
+        valid: false,
+        error: "Missing or empty required field 'operation' for tool 'text_transform'.",
+      };
+    }
+
+    const normalized = { text: text.trim(), operation: operation.trim().toLowerCase() };
+    if (input.options && typeof input.options === "object") {
+      normalized.options = input.options;
+    }
+    return { valid: true, input: normalized };
+  }
+
+  return { valid: true, input };
 }
 
 /**
@@ -53,7 +229,7 @@ export function normalizeActionFingerprint(toolName, input = {}) {
     return `${normTool}:::query=${cleanQuery}:::scope=${scope}`;
   }
   if (normTool === "calculator") {
-    const rawExpr = String(input?.expression || "").replace(/\s+/g, "").toLowerCase();
+    const rawExpr = String(input?.expression || input?.expr || "").replace(/\s+/g, "").toLowerCase();
     return `${normTool}:::expr=${rawExpr}`;
   }
   if (normTool === "text_transform") {
@@ -62,17 +238,17 @@ export function normalizeActionFingerprint(toolName, input = {}) {
     return `${normTool}:::op=${op}:::text=${text}`;
   }
   if (normTool === "coding") {
-    const task = String(input?.task || "").trim().toLowerCase();
+    const task = String(input?.task || input?.prompt || input?.instruction || "").trim().toLowerCase();
     const lang = String(input?.language || "").trim().toLowerCase();
     return `${normTool}:::task=${task}:::lang=${lang}`;
   }
   if (normTool === "execute_code") {
-    const code = String(input?.code || "").trim();
+    const code = String(input?.code || input?.script || "").trim();
     const lang = String(input?.language || "python").trim().toLowerCase();
-    return `${normTool}:::lang=${lang}:::code=${code}`;
+    return `${normTool}:::lang=${lang}:::code=${code.slice(0, 200)}`;
   }
   if (normTool === "vision") {
-    const prompt = String(input?.prompt || "").trim().toLowerCase();
+    const prompt = String(input?.prompt || input?.instruction || "").trim().toLowerCase();
     return `${normTool}:::prompt=${prompt.slice(0, 100)}`;
   }
   return `${normTool}:::${JSON.stringify(input || {})}`;
@@ -272,26 +448,17 @@ class AgentGraphService {
         workspaceId: state.workspaceId,
         retriever,
         coderClient: effectiveCoderClient,
+        sandboxRunner,
+        visionClient: effectiveVisionClient,
+        images: state.images || [],
       });
 
       const formattedTools = formatAvailableTools(
-        tools.map((t) => {
-          const shape =
-            t.schema?.shape ||
-            (typeof t.schema?._def?.shape === "function" ? t.schema._def.shape() : t.schema?._def?.shape) ||
-            {};
-          const properties = Object.fromEntries(
-            Object.entries(shape).map(([k, v]) => [
-              k,
-              { description: v?.description || "" },
-            ])
-          );
-          return {
-            name: t.name,
-            description: t.description,
-            inputSchema: { properties },
-          };
-        })
+        tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: zodToJsonSchema(t.schema),
+        }))
       );
 
       const formattedHistory = formatStepHistory(state.steps);
@@ -492,6 +659,10 @@ Return ONLY a valid JSON object matching the Response Schema.`;
         : (decision.tool || decision.toolName);
 
       const reasonerStepNum = (state.steps.length * 2) + 1;
+      console.log(`\n[Agent Step ${reasonerStepNum}]`);
+      console.log(`Model: Qwen3`);
+      console.log(`Decision: ${decisionName}`);
+      if (decision.reason) console.log(`Reason: ${decision.reason}`);
       console.log(`\n[Agent Step ${reasonerStepNum}] Model: Qwen3 / Decision: ${decisionName}${decision.reason ? ` / Reason: ${decision.reason}` : ""}`);
 
       return {
@@ -556,6 +727,51 @@ Return ONLY a valid JSON object matching the Response Schema.`;
       }
 
       const toolStepNum = (state.steps.length * 2) + 2;
+
+      // Generic Tool Input Normalization and Validation
+      const validation = normalizeAndValidateToolInput(toolName, decision.input, state);
+      if (!validation.valid) {
+        console.log(`\n[Agent Step ${toolStepNum}] Tool: ${toolName}`);
+        console.log(`Arguments: invalid`);
+        console.log(`[Tool Result]`);
+        console.log(`Error: ${validation.error}`);
+        emit({
+          status: "tool_complete",
+          tool: toolName,
+          success: false,
+          message: `✗ Tool "${toolName}" argument validation error: ${validation.error}`,
+        });
+        const failRecord = {
+          type: "tool",
+          action: "tool",
+          tool: toolName,
+          toolName,
+          reason: decision.reason,
+          input: decision.input || {},
+          output: { error: validation.error },
+          observation: { error: validation.error },
+          status: "failed",
+          executionTimeMs: 0,
+        };
+        return {
+          steps: [failRecord],
+          toolExecutionCount: state.toolExecutionCount + 1,
+          status: AGENT_STATUS.PLANNING,
+          workflow: {
+            completedSteps: [toolName],
+            retryCount: (state.workflow?.retryCount || 0) + 1,
+          },
+        };
+      }
+
+      // Adopt normalized input
+      decision.input = validation.input;
+
+      console.log(`\n[Agent Step ${toolStepNum}]`);
+      console.log(`Tool: ${toolName}`);
+      console.log(`Arguments: valid`);
+      console.log(`Execution: started`);
+
       let toolDetail = "";
       if (toolName === "vision") {
         toolDetail = `/ Instruction: ${decision.input?.prompt || "Visual inspection"}`;
@@ -718,6 +934,12 @@ Return ONLY a valid JSON object matching the Response Schema.`;
             console.log(typeof parsedResult === "object" ? JSON.stringify(parsedResult) : String(parsedResult));
           }
 
+          const executionTimeMs = Date.now() - startTime;
+          console.log(`\n[Agent Step ${toolStepNum + 1}]`);
+          console.log(`Tool: ${toolName}`);
+          console.log(`Execution: ${isSuccess ? "completed" : "failed"}`);
+          console.log(`Duration: ${executionTimeMs} ms`);
+
           const toolDoneMsg = isSuccess
             ? toolName === "retrieve_information"
               ? "✓ Knowledge retrieved"
@@ -762,9 +984,14 @@ Return ONLY a valid JSON object matching the Response Schema.`;
             output: boundedOutput,
             observation: boundedOutput,
             status: isSuccess ? "completed" : "failed",
-            executionTimeMs: Date.now() - startTime,
+            executionTimeMs,
           };
         } catch (execErr) {
+          const executionTimeMs = Date.now() - startTime;
+          console.log(`\n[Agent Step ${toolStepNum + 1}]`);
+          console.log(`Tool: ${toolName}`);
+          console.log(`Execution: failed`);
+          console.log(`Duration: ${executionTimeMs} ms`);
           console.log(`[Tool Result]`);
           console.log(`Error: ${execErr.message}`);
           if (toolName === "execute_code") {
@@ -786,7 +1013,7 @@ Return ONLY a valid JSON object matching the Response Schema.`;
             input: decision.input,
             observation: { error: execErr.message },
             status: "failed",
-            executionTimeMs: Date.now() - startTime,
+            executionTimeMs,
           };
         }
       }

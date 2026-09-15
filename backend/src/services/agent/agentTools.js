@@ -225,7 +225,7 @@ export function createAgentTools(context = {}) {
 /**
  * Helper to safely extract clean JSON Schema from Zod for tool description / inspection
  */
-function zodToJsonSchema(zodSchema) {
+export function zodToJsonSchema(zodSchema) {
   try {
     const shape =
       zodSchema?.shape ||
@@ -233,18 +233,94 @@ function zodToJsonSchema(zodSchema) {
       {};
     const properties = {};
     const required = [];
+
     for (const [key, prop] of Object.entries(shape)) {
-      const isOptional = typeof prop?.isOptional === "function" ? prop.isOptional() : false;
-      if (!isOptional) required.push(key);
+      const isOptional =
+        typeof prop?.isOptional === "function"
+          ? prop.isOptional()
+          : Boolean(prop?._def?.defaultValue !== undefined);
+
+      if (!isOptional) {
+        required.push(key);
+      }
+
+      let typeName = "string";
+      const defType = prop?._def?.typeName || "";
+      if (defType.includes("ZodNumber")) typeName = "number";
+      else if (defType.includes("ZodBoolean")) typeName = "boolean";
+      else if (defType.includes("ZodEnum")) {
+        const values = prop?._def?.values || prop?._def?.entries || [];
+        typeName = `string [${values.join(", ")}]`;
+      } else if (defType.includes("ZodRecord") || defType.includes("ZodObject")) {
+        typeName = "object";
+      } else if (defType.includes("ZodArray")) {
+        typeName = "array";
+      }
+
       properties[key] = {
+        type: typeName,
         description: prop?.description || "",
       };
     }
     return { type: "object", properties, required };
   } catch {
-    return { type: "object" };
+    return { type: "object", properties: {}, required: [] };
   }
 }
+
+/**
+ * Standardized Tool Contract Metadata & Canonical Parameter Mappings
+ */
+export const TOOL_CONTRACTS = Object.freeze({
+  calculator: {
+    required: ["expression"],
+    aliases: {
+      expression: ["expr", "calculation", "math", "formula", "query"],
+    },
+    primaryKey: "expression",
+  },
+  text_transform: {
+    required: ["text", "operation"],
+    aliases: {
+      text: ["content", "input", "string"],
+      operation: ["op", "action", "mode"],
+    },
+    primaryKey: "text",
+  },
+  retrieve_information: {
+    required: ["query"],
+    aliases: {
+      query: ["searchTerm", "search", "question", "prompt"],
+    },
+    primaryKey: "query",
+  },
+  coding: {
+    required: ["task"],
+    aliases: {
+      task: ["prompt", "instruction", "codeTask", "description", "goal", "query"],
+      language: ["lang", "targetLanguage"],
+      codeContext: ["context", "existingCode", "code"],
+    },
+    primaryKey: "task",
+  },
+  execute_code: {
+    required: ["code"],
+    aliases: {
+      code: ["script", "sourceCode", "source", "snippet"],
+      language: ["lang", "runtime"],
+      timeoutMs: ["timeout"],
+    },
+    primaryKey: "code",
+  },
+  vision: {
+    required: ["prompt"],
+    aliases: {
+      prompt: ["instruction", "question", "task", "query"],
+      image: ["imageData", "img"],
+    },
+    primaryKey: "prompt",
+  },
+});
 
 /**
  * Returns static metadata for registered tools.
@@ -265,6 +341,8 @@ export default {
   CodingSchema,
   ExecuteCodeSchema,
   VisionSchema,
+  TOOL_CONTRACTS,
+  zodToJsonSchema,
   createAgentTools,
   getAgentToolsMetadata,
 };
